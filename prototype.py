@@ -92,26 +92,17 @@ class Crawler:
         # get root node of document, is needed to be sure that the DOM is loaded
         root_node = self.tab.DOM.getDocument()
 
-        cookie_notices_node_ids, rules = self.find_cookie_notice_by_rules()
-        print(rules)
         #self.is_cmp_function_defined()
+        #cookie_notices_node_ids, rules = self.find_cookie_notice_by_rules()
+        cookie_string_node_ids = self.search_dom_for_cookie()
 
-        #self.search_dom_for_cookie()
+        #self.take_screenshots_of_visible_nodes(cookie_notices_node_ids, 'rules')
+        self.take_screenshots_of_visible_nodes(cookie_string_node_ids, 'cookie-string')
 
         #self.take_screenshot('before')
         #self.tab.Input.emulateTouchFromMouseEvent(type="mouseWheel", x=1, y=1, button="none", deltaX=0, deltaY=-100)
         #self.tab.wait(0.1)
         #self.take_screenshot('after')
-
-        color_content = {'r': 152, 'g': 196, 'b': 234, 'a': 0.5}
-        color_padding = {'r': 184, 'g': 226, 'b': 183, 'a': 0.5}
-        hightlightConfig = {'contentColor': color_content, 'paddingColor': color_padding}
-        for index, node_id in enumerate(cookie_notices_node_ids):
-            is_visible, visible_node = self.is_node_visible(node_id)
-            if not visible_node:
-                continue
-            self.tab.Overlay.highlightNode(highlightConfig=hightlightConfig, nodeId=visible_node)
-            self.take_screenshot('overlay-' + str(index))
 
         # stop and close the tab
         self.tab.stop()
@@ -138,7 +129,7 @@ class Crawler:
         # callback is called when the page is loaded
         tab.Page.enable()
 
-        # enable DOM and Runtime
+        # enable DOM, Runtime and Overlay
         tab.DOM.enable()
         tab.Runtime.enable()
         tab.Overlay.enable()
@@ -155,7 +146,6 @@ class Crawler:
         there can still be connection issues.
         """
         url = request['url']
-        #pprint(request)
         self.result.add_request(request_url=url)
 
     def _event_response_received(self, response, **kwargs):
@@ -178,19 +168,6 @@ class Crawler:
         """
         self._is_loaded = True
 
-    def take_screenshot(self, name):
-        # get the width and height of the viewport
-        layout_metrics = self.tab.Page.getLayoutMetrics()
-        viewport = layout_metrics.get('layoutViewport')
-        width = viewport.get('clientWidth')
-        height = viewport.get('clientHeight')
-        x = viewport.get('pageX')
-        y = viewport.get('pageY')
-        screenshot_viewport = {"x": x, "y": y, "width": width, "height": height, "scale": 2}
-
-        # take screenshot and store it
-        self.result.add_screenshot(name, self.tab.Page.captureScreenshot(clip=screenshot_viewport)['data'])
-
     def search_dom_for_cookie(self):
         # stop execution of scripts to ensure that results do not change during search
         self.tab.Emulation.setScriptExecutionDisabled(value=True)
@@ -208,13 +185,12 @@ class Crawler:
         results = []
         rules = []
         root_node_id = self.tab.DOM.getDocument().get('root').get('nodeId')
-        for rule in self.abp_filter._rules:
-            if self.abp_filter._is_rule_applicable(rule, self.result.hostname):
-                node_ids = self.tab.DOM.querySelectorAll(nodeId=root_node_id, selector=rule.selector.get('value'))
-                node_ids = node_ids['nodeIds']
-                if len(node_ids) > 0:
-                    results = results + node_ids
-                    rules = rules + [rule * len(node_ids)]
+        for rule in self.abp_filter.get_applicable_rules(self.result.hostname):
+            node_ids = self.tab.DOM.querySelectorAll(nodeId=root_node_id, selector=rule.selector.get('value'))
+            node_ids = node_ids['nodeIds']
+            if len(node_ids) > 0:
+                results = results + node_ids
+                rules = rules + [rule * len(node_ids)]
 
         self.result.set_cookie_notice_by_rules(results)
         return results, rules
@@ -285,9 +261,42 @@ class Crawler:
         remote_object_id = self.tab.DOM.resolveNode(nodeId=node_id).get('object').get('objectId')
         result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
         if result.get('type') == 'boolean':
-            return result.get('value'), None
+            return {
+                'is_visible': result.get('value'),
+                'visible_node': None,
+            }
         else:
-            return True, self.tab.DOM.requestNode(objectId=result.get('objectId')).get('nodeId')
+            return {
+                'is_visible': True,
+                'visible_node': self.tab.DOM.requestNode(objectId=result.get('objectId')).get('nodeId'),
+            }
+
+    def take_screenshots_of_visible_nodes(self, node_ids, name):
+        # filter only visible nodes
+        # and replace the original node_id with their visible children if the node itself is not visible
+        node_ids = [visibility.get('visible_node') for visibility in (self.is_node_visible(node_id) for node_id in node_ids) if visibility.get('is_visible')]
+        self.take_screenshots_of_nodes(node_ids, name)
+
+    def take_screenshots_of_nodes(self, node_ids, name):
+        color_content = {'r': 152, 'g': 196, 'b': 234, 'a': 0.5}
+        color_padding = {'r': 184, 'g': 226, 'b': 183, 'a': 0.5}
+        hightlightConfig = {'contentColor': color_content, 'paddingColor': color_padding}
+        for index, node_id in enumerate(node_ids):
+            self.tab.Overlay.highlightNode(highlightConfig=hightlightConfig, nodeId=node_id)
+            self.take_screenshot(name + '-' + str(index))
+
+    def take_screenshot(self, name):
+        # get the width and height of the viewport
+        layout_metrics = self.tab.Page.getLayoutMetrics()
+        viewport = layout_metrics.get('layoutViewport')
+        width = viewport.get('clientWidth')
+        height = viewport.get('clientHeight')
+        x = viewport.get('pageX')
+        y = viewport.get('pageY')
+        screenshot_viewport = {"x": x, "y": y, "width": width, "height": height, "scale": 2}
+
+        # take screenshot and store it
+        self.result.add_screenshot(name, self.tab.Page.captureScreenshot(clip=screenshot_viewport)['data'])
 
 
 class AdBlockPlusFilter:
@@ -297,6 +306,9 @@ class AdBlockPlusFilter:
             # other instances are Header, Metadata, etc.
             # other type is url-pattern which is used to block script files
             self._rules = [rule for rule in parse_filterlist(filterlist) if isinstance(rule, abp.filters.parser.Filter) and rule.selector.get('type') == 'css']
+
+    def get_applicable_rules(self, hostname):
+        return [rule for rule in self._rules if self._is_rule_applicable(rule, hostname)]
 
     def _is_rule_applicable(self, rule, hostname):
         domain_options = [(key, value) for key, value in rule.options if key == 'domain']
