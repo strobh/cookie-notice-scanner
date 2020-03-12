@@ -96,30 +96,10 @@ class Crawler:
         # get root node of document, is needed to be sure that the DOM is loaded
         root_node = self.tab.DOM.getDocument()
 
-        #self.is_cmp_function_defined()
-        #cookie_notices_node_ids, rules = self.find_cookie_notice_by_rules()
-
-        cookie_string_node_ids = self.search_dom_for_cookie()
-        fixed_parents = set([])
-        for node_id in cookie_string_node_ids:
-            fp_result = self.find_fixed_parent_of_node(node_id)
-            if fp_result.get('has_fixed_parent'):
-                fixed_parents.add(fp_result.get('fixed_parent'))
-
-        #self.take_screenshots_of_visible_nodes(cookie_notices_node_ids, 'rules')
-        self.take_screenshots_of_visible_nodes(cookie_string_node_ids, 'cookie-string')
-        self.take_screenshots_of_visible_nodes(fixed_parents, 'fixed-parents')
-
-        #self.take_screenshot('before')
-        #self.tab.Input.emulateTouchFromMouseEvent(type="mouseWheel", x=1, y=1, button="none", deltaX=0, deltaY=-100)
-        #self.tab.wait(0.1)
-        #self.take_screenshot('after')
-
-        # get cookies
-        self.result.set_cookies(self.tab.Network.getAllCookies().get('cookies'))
+        # do analyses
+        self.do_analyses()
 
         # stop and close the tab
-        self._delete_all_cookies()
         self.tab.stop()
         self.browser.close_tab(self.tab)
 
@@ -179,7 +159,7 @@ class Crawler:
         """Will be called when the page sends an load event.
 
         Note that this only means that all resources are loaded, the
-        page may still processes some JavaScript.
+        page may still process some JavaScript.
         """
         self._is_loaded = True
 
@@ -205,14 +185,39 @@ class Crawler:
     def _get_remote_object_id_for_node_id(self, node_id):
         return self.tab.DOM.resolveNode(nodeId=node_id).get('object').get('objectId')
 
-    def search_dom_for_cookie(self):
+    def do_analyses(self):
+        #self.is_cmp_function_defined()
+        #cookie_notices_node_ids, rules = self.find_cookie_notice_by_rules()
+
+        cookie_string_node_ids = self.search_for_string('cookie')
+        fixed_parents = set([])
+        for node_id in cookie_string_node_ids:
+            fp_result = self.find_fixed_parent_of_node(node_id)
+            if fp_result.get('has_fixed_parent'):
+                fixed_parents.add(fp_result.get('fixed_parent'))
+
+        #self.take_screenshots_of_visible_nodes(cookie_notices_node_ids, 'rules')
+        self.take_screenshots_of_visible_nodes(cookie_string_node_ids, 'cookie-string')
+        self.take_screenshots_of_visible_nodes(fixed_parents, 'fixed-parents')
+
+        #self.take_screenshot('before')
+        #self.tab.Input.emulateTouchFromMouseEvent(type="mouseWheel", x=1, y=1, button="none", deltaX=0, deltaY=-100)
+        #self.tab.wait(0.1)
+        #self.take_screenshot('after')
+
+        # get cookies and delete them afterwards
+        self.result.set_cookies(self.tab.Network.getAllCookies().get('cookies'))
+        self._delete_all_cookies()
+
+    def search_for_string(self, search_string):
         """Searches the DOM for the string `cookie` and returns all found nodes."""
 
         # stop execution of scripts to ensure that results do not change during search
         self.tab.Emulation.setScriptExecutionDisabled(value=True)
 
-        # search for `cookie` in text
-        search_object = self.tab.DOM.performSearch(query="//*[contains(translate(text(), 'COKIE', 'cokie'), 'cookie')]")
+        # search for the string in text
+        search_object = self.tab.DOM.performSearch(
+                query="//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), " + search_string + ")]")
         node_ids = self.tab.DOM.getSearchResults(searchId=search_object.get('searchId'), fromIndex=0, toIndex=int(search_object.get('resultCount')))
         node_ids = node_ids['nodeIds']
 
