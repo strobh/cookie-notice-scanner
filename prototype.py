@@ -94,7 +94,6 @@ class Crawler:
 
         cookie_notices_node_ids, rules = self.find_cookie_notice_by_rules()
         print(rules)
-        cookie_notices_node_ids = [node_id for node_id in cookie_notices_node_ids if self.is_node_visible(node_id)]
         #self.is_cmp_function_defined()
 
         #self.search_dom_for_cookie()
@@ -108,7 +107,10 @@ class Crawler:
         color_padding = {'r': 184, 'g': 226, 'b': 183, 'a': 0.5}
         hightlightConfig = {'contentColor': color_content, 'paddingColor': color_padding}
         for index, node_id in enumerate(cookie_notices_node_ids):
-            self.tab.Overlay.highlightNode(highlightConfig=hightlightConfig, nodeId=node_id)
+            is_visible, visible_node = self.is_node_visible(node_id)
+            if not visible_node:
+                continue
+            self.tab.Overlay.highlightNode(highlightConfig=hightlightConfig, nodeId=visible_node)
             self.take_screenshot('overlay-' + str(index))
 
         # stop and close the tab
@@ -228,37 +230,64 @@ class Crawler:
 
     def is_node_visible(self, node_id):
         # Source: https://stackoverflow.com/a/41698614
+        # adapted to also look at child nodes (especially important for fixed 
+        # elements as their parents might not be visible themselves)
         js_function = """
-            function() {
-                elem = this;
-                if (!(elem instanceof Element)) throw Error('DomUtil: elem is not an element.');
+            function isVisible(elem) {
+                if (!elem) elem = this;
+                visible = true;
+                if (!(elem instanceof Element)) return false;
                 const style = getComputedStyle(elem);
+
+                // for these rules the childs cannot be visible, directly return
                 if (style.display === 'none') return false;
-                if (style.visibility !== 'visible') return false;
                 if (style.opacity < 0.1) return false;
+                if (style.visibility !== 'visible') return false;
+
+                // for these rules a child element might still be visible,
+                // we need to also look at the childs, no direct return
                 if (elem.offsetWidth + elem.offsetHeight + elem.getBoundingClientRect().height +
                     elem.getBoundingClientRect().width === 0) {
-                    return false;
+                    visible = false;
                 }
                 const elemCenter   = {
                     x: elem.getBoundingClientRect().left + elem.offsetWidth / 2,
                     y: elem.getBoundingClientRect().top + elem.offsetHeight / 2
                 };
-                if (elemCenter.x < 0) return false;
-                if (elemCenter.x > (document.documentElement.clientWidth || window.innerWidth)) return false;
-                if (elemCenter.y < 0) return false;
-                if (elemCenter.y > (document.documentElement.clientHeight || window.innerHeight)) return false;
+                if (elemCenter.x < 0) visible = false;
+                if (elemCenter.x > (document.documentElement.clientWidth || window.innerWidth)) visible = false;
+                if (elemCenter.y < 0) visible = false;
+                if (elemCenter.y > (document.documentElement.clientHeight || window.innerHeight)) visible = false;
+
                 let pointContainer = document.elementFromPoint(elemCenter.x, elemCenter.y);
                 do {
-                    if (pointContainer === elem) return true;
-                    if (!pointCointainer) return false;
+                    if (pointContainer === elem) return elem;
+                    if (!pointContainer) break;
                 } while (pointContainer = pointContainer.parentNode);
+
+                // check the child nodes
+                if (!visible) {
+                    var childrenCount = elem.childNodes.length;
+                    for (var i = 0; i < childrenCount; i++) {
+                        isChildVisible = isVisible(elem.childNodes[i]);
+                        if (isChildVisible) {
+                            return elem.childNodes[i];
+                            //return true;
+                        }
+                    }
+                }
+
                 return false;
             }"""
 
+        self.tab.Runtime.evaluate(expression=js_function)
+
         remote_object_id = self.tab.DOM.resolveNode(nodeId=node_id).get('object').get('objectId')
         result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
-        return result.get('value')
+        if result.get('type') == 'boolean':
+            return result.get('value'), None
+        else:
+            return True, self.tab.DOM.requestNode(objectId=result.get('objectId')).get('nodeId')
 
 
 class AdBlockPlusFilter:
