@@ -168,7 +168,15 @@ class Crawler:
         """
         self._is_loaded = True
 
+    def _get_node_id_for_remote_object_id(self, remote_object_id):
+        return self.tab.DOM.requestNode(objectId=remote_object_id).get('nodeId')
+
+    def _get_remote_object_id_for_node_id(self, node_id):
+        return self.tab.DOM.resolveNode(nodeId=node_id).get('object').get('objectId')
+
     def search_dom_for_cookie(self):
+        """Searches the DOM for the string `cookie` and returns all found nodes."""
+
         # stop execution of scripts to ensure that results do not change during search
         self.tab.Emulation.setScriptExecutionDisabled(value=True)
 
@@ -182,20 +190,27 @@ class Crawler:
         return node_ids
 
     def find_cookie_notice_by_rules(self):
-        results = []
+        """Returns the node ids and the responsible rules of the found cookie notices.
+
+        The function uses the AdblockPlus ruleset of the browser plugin `I DON'T CARE ABOUT COOKIES`.
+        See: https://www.i-dont-care-about-cookies.eu/
+        """
+        node_ids = []
         rules = []
         root_node_id = self.tab.DOM.getDocument().get('root').get('nodeId')
         for rule in self.abp_filter.get_applicable_rules(self.result.hostname):
-            node_ids = self.tab.DOM.querySelectorAll(nodeId=root_node_id, selector=rule.selector.get('value'))
-            node_ids = node_ids['nodeIds']
-            if len(node_ids) > 0:
-                results = results + node_ids
-                rules = rules + [rule * len(node_ids)]
+            found_node_ids = self.tab.DOM.querySelectorAll(nodeId=root_node_id, selector=rule.selector.get('value'))
+            found_node_ids = found_node_ids['nodeIds']
+            if len(found_node_ids) > 0:
+                node_ids = node_ids + found_node_ids
+                rules = rules + [rule * len(found_node_ids)]
 
-        self.result.set_cookie_notice_by_rules(results)
-        return results, rules
+        self.result.set_cookie_notice_by_rules(node_ids)
+        return node_ids, rules
 
     def is_cmp_function_defined(self):
+        """Checks whether the function `__cmp` is defined on the JavaScript `window` object."""
+        
         result = self.tab.Runtime.evaluate(expression="typeof window.__cmp !== 'undefined'").get('result')
         return result.get('value')
 
@@ -256,19 +271,25 @@ class Crawler:
                 return false;
             }"""
 
+        # the function `isVisible` is calling itself recursively, 
+        # therefore it needs to be defined beforehand
         self.tab.Runtime.evaluate(expression=js_function)
 
-        remote_object_id = self.tab.DOM.resolveNode(nodeId=node_id).get('object').get('objectId')
+        # call the function `isVisible` on the node
+        remote_object_id = self._get_remote_object_id_for_node_id(node_id)
         result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
+
+        # if a boolean is returned, the object is not visible
         if result.get('type') == 'boolean':
             return {
                 'is_visible': result.get('value'),
                 'visible_node': None,
             }
+        # otherwise, the object or one of its children is visible
         else:
             return {
                 'is_visible': True,
-                'visible_node': self.tab.DOM.requestNode(objectId=result.get('objectId')).get('nodeId'),
+                'visible_node': self._get_node_id_for_remote_object_id(result.get('objectId')),
             }
 
     def take_screenshots_of_visible_nodes(self, node_ids, name):
@@ -281,6 +302,8 @@ class Crawler:
         color_content = {'r': 152, 'g': 196, 'b': 234, 'a': 0.5}
         color_padding = {'r': 184, 'g': 226, 'b': 183, 'a': 0.5}
         hightlightConfig = {'contentColor': color_content, 'paddingColor': color_padding}
+
+        # take a screenshot of the page with every node highlighted
         for index, node_id in enumerate(node_ids):
             self.tab.Overlay.highlightNode(highlightConfig=hightlightConfig, nodeId=node_id)
             self.take_screenshot(name + '-' + str(index))
