@@ -22,6 +22,7 @@ class WebpageResult:
 
         self.requests = []
         self.responses = []
+        self.cookies = []
 
         self.screenshots = {}
         self.ocr_filename = "ocr/" + self.id
@@ -40,6 +41,9 @@ class WebpageResult:
             'mime_type': mime_type,
             'headers': headers,
         })
+
+    def set_cookies(self, cookies):
+        self.cookies = cookies
 
     def add_screenshot(self, name, screenshot):
         self.screenshots[name] = screenshot
@@ -87,7 +91,10 @@ class Crawler:
 
         # wait some time for events, after the page has been loaded to look
         # for further requests from JavaScript
-        self.tab.wait(1)
+        self.tab.wait(2)
+
+        # get cookies
+        self.result.set_cookies(self.tab.Network.getAllCookies().get('cookies'))
 
         # get root node of document, is needed to be sure that the DOM is loaded
         root_node = self.tab.DOM.getDocument()
@@ -97,7 +104,7 @@ class Crawler:
         cookie_string_node_ids = self.search_dom_for_cookie()
 
         #self.take_screenshots_of_visible_nodes(cookie_notices_node_ids, 'rules')
-        self.take_screenshots_of_visible_nodes(cookie_string_node_ids, 'cookie-string')
+        #self.take_screenshots_of_visible_nodes(cookie_string_node_ids, 'cookie-string')
 
         #self.take_screenshot('before')
         #self.tab.Input.emulateTouchFromMouseEvent(type="mouseWheel", x=1, y=1, button="none", deltaX=0, deltaY=-100)
@@ -105,6 +112,7 @@ class Crawler:
         #self.take_screenshot('after')
 
         # stop and close the tab
+        self._delete_all_cookies()
         self.tab.stop()
         self.browser.close_tab(self.tab)
 
@@ -168,6 +176,11 @@ class Crawler:
         """
         self._is_loaded = True
 
+    def _delete_all_cookies(self):
+        while(len(self.tab.Network.getAllCookies().get('cookies')) != 0):
+            for cookie in self.tab.Network.getAllCookies().get('cookies'):
+                self.tab.Network.deleteCookies(name=cookie.get('name'), domain=cookie.get('domain'), path=cookie.get('path'))
+
     def _get_node_id_for_remote_object_id(self, remote_object_id):
         return self.tab.DOM.requestNode(objectId=remote_object_id).get('nodeId')
 
@@ -210,7 +223,7 @@ class Crawler:
 
     def is_cmp_function_defined(self):
         """Checks whether the function `__cmp` is defined on the JavaScript `window` object."""
-        
+
         result = self.tab.Runtime.evaluate(expression="typeof window.__cmp !== 'undefined'").get('result')
         return result.get('value')
 
