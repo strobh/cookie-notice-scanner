@@ -93,23 +93,30 @@ class Crawler:
         # for further requests from JavaScript
         self.tab.wait(2)
 
-        # get cookies
-        self.result.set_cookies(self.tab.Network.getAllCookies().get('cookies'))
-
         # get root node of document, is needed to be sure that the DOM is loaded
         root_node = self.tab.DOM.getDocument()
 
         #self.is_cmp_function_defined()
         #cookie_notices_node_ids, rules = self.find_cookie_notice_by_rules()
+
         cookie_string_node_ids = self.search_dom_for_cookie()
+        fixed_parents = set([])
+        for node_id in cookie_string_node_ids:
+            fp_result = self.find_fixed_parent_of_node(node_id)
+            if fp_result.get('has_fixed_parent'):
+                fixed_parents.add(fp_result.get('fixed_parent'))
 
         #self.take_screenshots_of_visible_nodes(cookie_notices_node_ids, 'rules')
-        #self.take_screenshots_of_visible_nodes(cookie_string_node_ids, 'cookie-string')
+        self.take_screenshots_of_visible_nodes(cookie_string_node_ids, 'cookie-string')
+        self.take_screenshots_of_visible_nodes(fixed_parents, 'fixed-parents')
 
         #self.take_screenshot('before')
         #self.tab.Input.emulateTouchFromMouseEvent(type="mouseWheel", x=1, y=1, button="none", deltaX=0, deltaY=-100)
         #self.tab.wait(0.1)
         #self.take_screenshot('after')
+
+        # get cookies
+        self.result.set_cookies(self.tab.Network.getAllCookies().get('cookies'))
 
         # stop and close the tab
         self._delete_all_cookies()
@@ -176,6 +183,17 @@ class Crawler:
         """
         self._is_loaded = True
 
+    def _highlight_node(self, node_id):
+        """Highlight the given node with an overlay."""
+
+        color_content = {'r': 152, 'g': 196, 'b': 234, 'a': 0.5}
+        color_padding = {'r': 184, 'g': 226, 'b': 183, 'a': 0.5}
+        highlightConfig = {'contentColor': color_content, 'paddingColor': color_padding}
+        self.tab.Overlay.highlightNode(highlightConfig=highlightConfig, nodeId=node_id)
+
+    def _hide_highlight(self):
+        self.tab.Overlay.hideHighlight()
+
     def _delete_all_cookies(self):
         while(len(self.tab.Network.getAllCookies().get('cookies')) != 0):
             for cookie in self.tab.Network.getAllCookies().get('cookies'):
@@ -201,6 +219,36 @@ class Crawler:
         # resume execution of scripts
         self.tab.Emulation.setScriptExecutionDisabled(value=False)
         return node_ids
+
+    def find_fixed_parent_of_node(self, node_id):
+        js_function = """
+            function findFixedParent(elem) {
+                if (!elem) elem = this;
+                while(elem && elem !== document) {
+                    let style = getComputedStyle(elem);
+                    if (style.position === 'fixed') {
+                        return elem;
+                    }
+                    elem = elem.parentNode;
+                }
+                return false;
+            }"""
+
+        remote_object_id = self._get_remote_object_id_for_node_id(node_id)
+        result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
+
+        # if a boolean is returned, the object is not visible
+        if result.get('type') == 'boolean':
+            return {
+                'has_fixed_parent': False,
+                'fixed_parent': None,
+            }
+        # otherwise, the object or one of its children is visible
+        else:
+            return {
+                'has_fixed_parent': True,
+                'fixed_parent': self._get_node_id_for_remote_object_id(result.get('objectId')),
+            }
 
     def find_cookie_notice_by_rules(self):
         """Returns the node ids and the responsible rules of the found cookie notices.
@@ -239,7 +287,7 @@ class Crawler:
         js_function = """
             function isVisible(elem) {
                 if (!elem) elem = this;
-                visible = true;
+                let visible = true;
                 if (!(elem instanceof Element)) return false;
                 const style = getComputedStyle(elem);
 
@@ -271,12 +319,11 @@ class Crawler:
 
                 // check the child nodes
                 if (!visible) {
-                    var childrenCount = elem.childNodes.length;
+                    let childrenCount = elem.childNodes.length;
                     for (var i = 0; i < childrenCount; i++) {
-                        isChildVisible = isVisible(elem.childNodes[i]);
+                        let isChildVisible = isVisible(elem.childNodes[i]);
                         if (isChildVisible) {
                             return elem.childNodes[i];
-                            //return true;
                         }
                     }
                 }
@@ -312,16 +359,16 @@ class Crawler:
         self.take_screenshots_of_nodes(node_ids, name)
 
     def take_screenshots_of_nodes(self, node_ids, name):
-        color_content = {'r': 152, 'g': 196, 'b': 234, 'a': 0.5}
-        color_padding = {'r': 184, 'g': 226, 'b': 183, 'a': 0.5}
-        hightlightConfig = {'contentColor': color_content, 'paddingColor': color_padding}
-
         # take a screenshot of the page with every node highlighted
         for index, node_id in enumerate(node_ids):
-            self.tab.Overlay.highlightNode(highlightConfig=hightlightConfig, nodeId=node_id)
+            self._highlight_node(node_id)
             self.take_screenshot(name + '-' + str(index))
+            self._hide_highlight()
 
     def take_screenshot(self, name):
+        # stop execution of scripts
+        self.tab.Emulation.setScriptExecutionDisabled(value=True)
+
         # get the width and height of the viewport
         layout_metrics = self.tab.Page.getLayoutMetrics()
         viewport = layout_metrics.get('layoutViewport')
@@ -329,10 +376,13 @@ class Crawler:
         height = viewport.get('clientHeight')
         x = viewport.get('pageX')
         y = viewport.get('pageY')
-        screenshot_viewport = {"x": x, "y": y, "width": width, "height": height, "scale": 2}
+        screenshot_viewport = {"x": x, "y": y, "width": width, "height": height, "scale": 1}
 
         # take screenshot and store it
         self.result.add_screenshot(name, self.tab.Page.captureScreenshot(clip=screenshot_viewport)['data'])
+
+        # resume execution of scripts
+        self.tab.Emulation.setScriptExecutionDisabled(value=False)
 
 
 class AdBlockPlusFilter:
