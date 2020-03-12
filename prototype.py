@@ -174,9 +174,16 @@ class Crawler:
     def _hide_highlight(self):
         self.tab.Overlay.hideHighlight()
 
+    def _scroll_down(self, delta_y):
+        self.tab.Input.emulateTouchFromMouseEvent(type="mouseWheel", x=1, y=1, button="none", deltaX=0, deltaY=-1*delta_y)
+        self.tab.wait(0.1)
+
+    def _get_all_cookies(self):
+        return self.tab.Network.getAllCookies().get('cookies')
+
     def _delete_all_cookies(self):
-        while(len(self.tab.Network.getAllCookies().get('cookies')) != 0):
-            for cookie in self.tab.Network.getAllCookies().get('cookies'):
+        while(len(self._get_all_cookies()) != 0):
+            for cookie in self._get_all_cookies():
                 self.tab.Network.deleteCookies(name=cookie.get('name'), domain=cookie.get('domain'), path=cookie.get('path'))
 
     def _get_node_id_for_remote_object_id(self, remote_object_id):
@@ -201,12 +208,11 @@ class Crawler:
         self.take_screenshots_of_visible_nodes(fixed_parents, 'fixed-parents')
 
         #self.take_screenshot('before')
-        #self.tab.Input.emulateTouchFromMouseEvent(type="mouseWheel", x=1, y=1, button="none", deltaX=0, deltaY=-100)
-        #self.tab.wait(0.1)
+        #self._scroll_down(100)
         #self.take_screenshot('after')
 
         # get cookies and delete them afterwards
-        self.result.set_cookies(self.tab.Network.getAllCookies().get('cookies'))
+        self.result.set_cookies(self._get_all_cookies())
         self._delete_all_cookies()
 
     def search_for_string(self, search_string):
