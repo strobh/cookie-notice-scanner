@@ -223,7 +223,7 @@ class Crawler:
 
         # search for the string in text
         search_object = self.tab.DOM.performSearch(
-                query="//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), " + search_string + ")]")
+                query="//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '" + search_string + "')]")
         node_ids = self.tab.DOM.getSearchResults(searchId=search_object.get('searchId'), fromIndex=0, toIndex=int(search_object.get('resultCount')))
         node_ids = node_ids['nodeIds']
 
