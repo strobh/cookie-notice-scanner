@@ -107,7 +107,7 @@ class Crawler:
             self.tab.wait(3)
 
             # get root node of document, is needed to be sure that the DOM is loaded
-            root_node = self.tab.DOM.getDocument()
+            self.root_node = self.tab.DOM.getDocument().get('root')
 
             # do analyses
             self.do_analyses()
@@ -183,7 +183,8 @@ class Crawler:
 
         color_content = {'r': 152, 'g': 196, 'b': 234, 'a': 0.5}
         color_padding = {'r': 184, 'g': 226, 'b': 183, 'a': 0.5}
-        highlightConfig = {'contentColor': color_content, 'paddingColor': color_padding}
+        color_margin = {'r': 253, 'g': 201, 'b': 148, 'a': 0.5}
+        highlightConfig = {'contentColor': color_content, 'paddingColor': color_padding, 'marginColor': color_margin}
         self.tab.Overlay.highlightNode(highlightConfig=highlightConfig, nodeId=node_id)
 
     def _hide_highlight(self):
@@ -206,6 +207,20 @@ class Crawler:
 
     def _get_remote_object_id_for_node_id(self, node_id):
         return self.tab.DOM.resolveNode(nodeId=node_id).get('object').get('objectId')
+
+    def _get_node_name(self, node_id):
+        return self.tab.DOM.describeNode(nodeId=node_id).get('node').get('nodeName').lower()
+
+    def _get_root_frame_id(self):
+        return self.tab.Page.getFrameTree().get('frameTree').get('frame').get('id')
+
+    def _is_script_or_style_node(self, node_id):
+        node_name = self._get_node_name(node_id)
+        return node_name == 'script' or node_name == 'style'
+
+    def _is_html_node(self, node_id):
+        node_name = self._get_node_name(node_id)
+        return node_name == 'html'
 
     def do_analyses(self):
         lang = self.detect_language()
@@ -254,12 +269,15 @@ class Crawler:
         # - https://stackoverflow.com/a/2994336
         # - https://stackoverflow.com/a/11744783
         search_object = self.tab.DOM.performSearch(
-                query="//*/text()[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '" + search_string + "')]/parent::*")
+                query="//body//*/text()[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '" + search_string + "')]/parent::*")
 
         node_ids = []
         if search_object.get('resultCount') != 0:
             node_ids = self.tab.DOM.getSearchResults(searchId=search_object.get('searchId'), fromIndex=0, toIndex=int(search_object.get('resultCount')))
             node_ids = node_ids['nodeIds']
+
+        # filter script and style nodes
+        node_ids = [node_id for node_id in node_ids if not self._is_script_or_style_node(node_id)]
 
         # resume execution of scripts
         self.tab.Emulation.setScriptExecutionDisabled(value=False)
@@ -269,30 +287,45 @@ class Crawler:
         js_function = """
             function findFixedParent(elem) {
                 if (!elem) elem = this;
-                while(elem && elem !== document) {
+                while(elem && elem.parentNode !== document) {
                     let style = getComputedStyle(elem);
                     if (style.position === 'fixed') {
                         return elem;
                     }
                     elem = elem.parentNode;
                 }
-                return false;
+                return elem;
             }"""
 
         remote_object_id = self._get_remote_object_id_for_node_id(node_id)
         result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
+        result_node_id = self._get_node_id_for_remote_object_id(result.get('objectId'))
 
-        # if a boolean is returned, the object is not visible
-        if result.get('type') == 'boolean':
-            return {
-                'has_fixed_parent': False,
-                'fixed_parent': None,
-            }
-        # otherwise, the object or one of its children is visible
+        # if the returned parent element is an html element,
+        # no fixed parent element was found
+        if self._is_html_node(result_node_id):
+            html_node_id = result_node_id
+            html_node = self.tab.DOM.describeNode(nodeId=html_node_id).get('node')
+
+            # if the html element is the root html element, we have not found
+            # a fixed parent
+            if self._get_root_frame_id() == html_node.get('frameId'):
+                return {
+                    'has_fixed_parent': False,
+                    'fixed_parent': None,
+                }
+            # otherwise, the frame is considered as the fixed parent
+            else:
+                frame_node_id = self.tab.DOM.getFrameOwner(frameId=html_node.get('frameId')).get('nodeId')
+                return {
+                    'has_fixed_parent': True,
+                    'fixed_parent': frame_node_id,
+                }
+        # otherwise, the returned parent element is a fixed element
         else:
             return {
                 'has_fixed_parent': True,
-                'fixed_parent': self._get_node_id_for_remote_object_id(result.get('objectId')),
+                'fixed_parent': result_node_id,
             }
 
     def find_cookie_notice_by_rules(self):
@@ -467,6 +500,8 @@ def main():
     #urls = []
     #with open('resources/urls.txt') as f:
     #    urls = [line.strip() for line in f]
+
+    #tranco_top_100 = ['forbes.com']
 
     c = Crawler()
 
