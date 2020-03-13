@@ -23,6 +23,11 @@ class WebpageResult:
         self.id = self.hostname
 
         self.failed = False
+        self.failed_reason = None
+        self.failed_exception = None
+
+        self.skipped = False
+        self.skipped_reason = None
 
         self.requests = []
         self.responses = []
@@ -31,10 +36,14 @@ class WebpageResult:
         self.screenshots = {}
         self.ocr_filename = "ocr/" + self.id
 
-        self.cookie_notice_by_rules = []
-
-    def set_failed(self):
+    def set_failed(self, reason, exception=None):
         self.failed = True
+        self.failed_reason = reason
+        self.failed_exception = exception
+
+    def set_skipped(self, reason):
+        self.skipped = True
+        self.skipped_reason = reason
 
     def add_request(self, request_url):
         self.requests.append({
@@ -66,9 +75,6 @@ class WebpageResult:
     def get_filename_for_screenshot(self, name):
         return "screenshots/" + self.id + "-" + name + ".png"
 
-    def set_cookie_notice_by_rules(self, nodeIds):
-        self.cookie_notice_by_rules = nodeIds
-
 
 class Crawler:
     def __init__(self, debugger_url='http://127.0.0.1:9222'):
@@ -89,7 +95,6 @@ class Crawler:
         # create and setup a tab
         self.tab = self._setup_tab()
         
-        # navigate to a specific page
         try:
             # deny notifications because they might pop-up and block detection
             self._deny_permission('notifications', self.result.hostname)
@@ -115,8 +120,10 @@ class Crawler:
 
             # do analyses
             self.do_analyses()
-        except pychrome.exceptions.TimeoutException:
-            self.result.set_failed()
+        except pychrome.exceptions.TimeoutException as e:
+            self.result.set_failed("timeout", e)
+        except pychrome.exceptions.CallMethodException as e:
+            self.result.set_failed("call_method", e)
 
         # stop and close the tab
         self.tab.stop()
@@ -214,6 +221,9 @@ class Crawler:
             for cookie in self._get_all_cookies():
                 self.tab.Network.deleteCookies(name=cookie.get('name'), domain=cookie.get('domain'), path=cookie.get('path'))
 
+    def _get_root_frame_id(self):
+        return self.tab.Page.getFrameTree().get('frameTree').get('frame').get('id')
+
     def _get_node_id_for_remote_object_id(self, remote_object_id):
         return self.tab.DOM.requestNode(objectId=remote_object_id).get('nodeId')
 
@@ -223,53 +233,61 @@ class Crawler:
     def _get_node_name(self, node_id):
         return self.tab.DOM.describeNode(nodeId=node_id).get('node').get('nodeName').lower()
 
-    def _get_root_frame_id(self):
-        return self.tab.Page.getFrameTree().get('frameTree').get('frame').get('id')
-
     def _is_script_or_style_node(self, node_id):
         node_name = self._get_node_name(node_id)
         return node_name == 'script' or node_name == 'style'
 
     def _is_html_node(self, node_id):
-        node_name = self._get_node_name(node_id)
-        return node_name == 'html'
+        return self._get_node_name(node_id) == 'html'
+
+    def _is_inline_element(self, node_id):
+        inline_elements = [
+            'a', 'abbr', 'acronym', 'b', 'bdo', 'big', 'br', 'button', 'cite',
+            'code', 'dfn', 'em', 'i', 'img', 'input', 'kbd', 'label', 'map',
+            'object', 'output', 'q', 'samp', 'script', 'select', 'small',
+            'span', 'strong', 'sub', 'sup', 'textarea', 'time', 'tt', 'var'
+        ]
+        return self._get_node_name(node_id) in inline_elements
 
     def do_analyses(self):
         lang = self.detect_language()
         if lang != 'en' and lang != 'de':
-            print('-> skipped language: ' + lang)
+            self.result.set_skipped('unimplemented language `' + lang + '`')
             return
 
-        self.take_screenshot("original")
+        self.take_screenshot('original')
 
-        #self.is_cmp_function_defined()
-        #cookie_notices_node_ids, rules = self.find_cookie_notice_by_rules()
+        # check whether the consent management platform is used
+        # -> there should be a cookie notice
+        is_cmp_defined = self.is_cmp_function_defined()
 
-        cookie_string_node_ids = self.search_for_string('cookie')
-        fixed_parents = set([])
-        for node_id in cookie_string_node_ids:
-            fp_result = self.find_fixed_parent_of_node(node_id)
+        # find cookie notice by using AdblockPlus rules
+        #cookie_notice_rule_node_ids = self.find_cookie_notice_by_rules()
+        #self.take_screenshots_of_visible_nodes(cookie_notice_rule_node_ids, 'rules')
+
+        # find string `cookie` in nodes and store the closest parent block element
+        cookie_node_ids = self.search_for_string('cookie')
+        cookie_node_ids = set([self.find_parent_block_element(node_id) for node_id in cookie_node_ids])
+        self.take_screenshots_of_visible_nodes(cookie_node_ids, 'cookie-string')
+
+        # find fixed parents nodes (i.e. having style `position: fixed`) with string `cookie`
+        cookie_notice_fixed_node_ids = set([])
+        for node_id in cookie_node_ids:
+            fp_result = self.find_fixed_parent(node_id)
             if fp_result.get('has_fixed_parent'):
-                fixed_parents.add(fp_result.get('fixed_parent'))
-
-        #self.take_screenshots_of_visible_nodes(cookie_notices_node_ids, 'rules')
-        self.take_screenshots_of_visible_nodes(cookie_string_node_ids, 'cookie-string')
-        self.take_screenshots_of_visible_nodes(fixed_parents, 'fixed-parents')
-
-        #self.take_screenshot('before')
-        #self._scroll_down(100)
-        #self.take_screenshot('after')
+                cookie_notice_fixed_node_ids.add(fp_result.get('fixed_parent'))
+        self.take_screenshots_of_visible_nodes(cookie_notice_fixed_node_ids, 'fixed-parent')
 
         # get cookies and delete them afterwards
         self.result.set_cookies(self._get_all_cookies())
         self._delete_all_cookies()
 
     def detect_language(self):
-        result = self.tab.Runtime.evaluate(expression="document.body.innerText").get('result')
+        result = self.tab.Runtime.evaluate(expression='document.body.innerText').get('result')
         return detect(result.get('value'))
 
     def search_for_string(self, search_string):
-        """Searches the DOM for the string `cookie` and returns all found nodes."""
+        """Searches the DOM for the given string and returns all found nodes."""
 
         # stop execution of scripts to ensure that results do not change during search
         self.tab.Emulation.setScriptExecutionDisabled(value=True)
@@ -285,17 +303,55 @@ class Crawler:
 
         node_ids = []
         if search_object.get('resultCount') != 0:
-            node_ids = self.tab.DOM.getSearchResults(searchId=search_object.get('searchId'), fromIndex=0, toIndex=int(search_object.get('resultCount')))
-            node_ids = node_ids['nodeIds']
+            search_results = self.tab.DOM.getSearchResults(
+                    searchId=search_object.get('searchId'),
+                    fromIndex=0,
+                    toIndex=int(search_object.get('resultCount')))
+            node_ids = search_results.get('nodeIds')
 
-        # filter script and style nodes
+        # remove script and style nodes
         node_ids = [node_id for node_id in node_ids if not self._is_script_or_style_node(node_id)]
 
         # resume execution of scripts
         self.tab.Emulation.setScriptExecutionDisabled(value=False)
+
+        # return nodes
         return node_ids
 
-    def find_fixed_parent_of_node(self, node_id):
+    def find_parent_block_element(self, node_id):
+        """Returns the nearest parent block element or the element itself if it
+        is a block element."""
+
+        # if the node is a block element, just return it again
+        if not self._is_inline_element(node_id):
+            print('is block already')
+            return node_id
+
+        js_function= """
+            function findClosestBlockElement(elem) {
+                let _inline_elements = [
+                    'a', 'abbr', 'acronym', 'b', 'bdo', 'big', 'br', 'button', 'cite',
+                    'code', 'dfn', 'em', 'i', 'img', 'input', 'kbd', 'label', 'map',
+                    'object', 'output', 'q', 'samp', 'script', 'select', 'small',
+                    'span', 'strong', 'sub', 'sup', 'textarea', 'time', 'tt', 'var'];
+
+                function isInlineElement(elem) {
+                    return _inline_elements.includes(elem.nodeName.toLowerCase());
+                }
+
+                if (!elem) elem = this;
+                while(elem && elem !== document && isInlineElement(elem)) {
+                    elem = elem.parentNode;
+                }
+                return elem;
+            }"""
+
+        # call the function `findClosestBlockElement` on the node
+        remote_object_id = self._get_remote_object_id_for_node_id(node_id)
+        result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
+        return self._get_node_id_for_remote_object_id(result.get('objectId'))
+
+    def find_fixed_parent(self, node_id):
         js_function = """
             function findFixedParent(elem) {
                 if (!elem) elem = this;
@@ -306,7 +362,7 @@ class Crawler:
                     }
                     elem = elem.parentNode;
                 }
-                return elem;
+                return elem; // html node
             }"""
 
         remote_object_id = self._get_remote_object_id_for_node_id(node_id)
@@ -326,7 +382,7 @@ class Crawler:
                     'has_fixed_parent': False,
                     'fixed_parent': None,
                 }
-            # otherwise, the frame is considered as the fixed parent
+            # otherwise, the frame is considered to be the fixed parent
             else:
                 frame_node_id = self.tab.DOM.getFrameOwner(frameId=html_node.get('frameId')).get('nodeId')
                 return {
@@ -341,26 +397,23 @@ class Crawler:
             }
 
     def find_cookie_notice_by_rules(self):
-        """Returns the node ids and the responsible rules of the found cookie notices.
+        """Returns the node ids of the found cookie notices.
 
-        The function uses the AdblockPlus ruleset of the browser plugin `I DON'T CARE ABOUT COOKIES`.
+        The function uses the AdblockPlus ruleset of the browser plugin
+        `I DON'T CARE ABOUT COOKIES`.
         See: https://www.i-dont-care-about-cookies.eu/
         """
         node_ids = []
-        rules = []
         root_node_id = self.tab.DOM.getDocument().get('root').get('nodeId')
         for rule in self.abp_filter.get_applicable_rules(self.result.hostname):
-            found_node_ids = self.tab.DOM.querySelectorAll(nodeId=root_node_id, selector=rule.selector.get('value'))
-            found_node_ids = found_node_ids['nodeIds']
-            if len(found_node_ids) > 0:
-                node_ids = node_ids + found_node_ids
-                rules = rules + [rule * len(found_node_ids)]
+            search_results = self.tab.DOM.querySelectorAll(nodeId=root_node_id, selector=rule.selector.get('value'))
+            node_ids = node_ids + search_results.get('nodeIds')
 
-        self.result.set_cookie_notice_by_rules(node_ids)
-        return node_ids, rules
+        return node_ids
 
     def is_cmp_function_defined(self):
-        """Checks whether the function `__cmp` is defined on the JavaScript `window` object."""
+        """Checks whether the function `__cmp` is defined on the JavaScript
+        `window` object."""
 
         result = self.tab.Runtime.evaluate(expression="typeof window.__cmp !== 'undefined'").get('result')
         return result.get('value')
@@ -464,7 +517,7 @@ class Crawler:
         height = viewport.get('clientHeight')
         x = viewport.get('pageX')
         y = viewport.get('pageY')
-        screenshot_viewport = {"x": x, "y": y, "width": width, "height": height, "scale": 1}
+        screenshot_viewport = {'x': x, 'y': y, 'width': width, 'height': height, 'scale': 1}
 
         # take screenshot and store it
         self.result.add_screenshot(name, self.tab.Page.captureScreenshot(clip=screenshot_viewport)['data'])
@@ -513,18 +566,21 @@ def main():
     #with open('resources/urls.txt') as f:
     #    urls = [line.strip() for line in f]
 
-    #tranco_top_100 = ['reddit.com']
+    tranco_top_100 = ['twitch.tv']
 
     c = Crawler()
 
     result_list = []
     for rank, url in enumerate(tranco_top_100):
-        print("#" + str(rank) + ": " + url)
+        print('#' + str(rank) + ': ' + url)
         result = c.crawl_page('https://' + url)
         result_list.append(result)
 
-        if (result.failed):
-            print("-> failed")
+        if result.skipped:
+            print('Skipped: ' + result.skipped_reason)
+
+        if result.failed:
+            print('Failed: ' + result.failed_reason)
 
         result.save_screenshots()
         #subprocess.call(["tesseract", result.screenshot_filename, result.ocr_filename, "--oem", "1", "-l", "eng+deu"])
