@@ -100,6 +100,7 @@ class Crawler:
             self._deny_permission('notifications', self.result.hostname)
 
             # open url
+            self.requestId = None
             self.tab.Page.navigate(url=url, _timeout=15)
 
             # we wait for our load event to be fired (see `_event_load_event_fired`)
@@ -137,6 +138,7 @@ class Crawler:
         # set callbacks for request and response logging
         tab.Network.requestWillBeSent = self._event_request_will_be_sent
         tab.Network.responseReceived = self._event_response_received
+        tab.Network.loadingFailed = self._event_loading_failed
         tab.Page.loadEventFired = self._event_load_event_fired
         
         # start our tab after callbacks have been registered
@@ -157,7 +159,7 @@ class Crawler:
 
         return tab
 
-    def _event_request_will_be_sent(self, request, **kwargs):
+    def _event_request_will_be_sent(self, request, requestId, **kwargs):
         """Will be called when a request is about to be sent.
 
         Those requests can still be blocked or intercepted and modified.
@@ -169,7 +171,11 @@ class Crawler:
         url = request['url']
         self.result.add_request(request_url=url)
 
-    def _event_response_received(self, response, **kwargs):
+        # the request id of the first request is stored to be able to detect failures
+        if self.requestId == None:
+            self.requestId = requestId
+
+    def _event_response_received(self, response, requestId, **kwargs):
         """Will be called when a response is received.
 
         This includes the originating request which resulted in the
@@ -180,6 +186,13 @@ class Crawler:
         status = response['status']
         headers = response['headers']
         self.result.add_response(requested_url=url, status=status, mime_type=mime_type, headers=headers)
+
+        if requestId == self.requestId and (str(status).startswith('4') or str(status).startswith('5')):
+            self.result.set_failed('status code `' + str(status) + '`')
+
+    def _event_loading_failed(self, requestId, errorText, **kwargs):
+        if requestId == self.requestId:
+            self.result.set_failed('loading failed `' + errorText + '`')
 
     def _event_load_event_fired(self, timestamp, **kwargs):
         """Will be called when the page sends an load event.
@@ -324,7 +337,6 @@ class Crawler:
 
         # if the node is a block element, just return it again
         if not self._is_inline_element(node_id):
-            print('is block already')
             return node_id
 
         js_function= """
@@ -560,13 +572,13 @@ class AdBlockPlusFilter:
 def main():
     tranco = Tranco(cache=True, cache_dir='tranco')
     tranco_list = tranco.list(date='2020-03-01')
-    tranco_top_100 = tranco_list.top(100)
+    tranco_top_100 = tranco_list.top(20)
 
     #urls = []
     #with open('resources/urls.txt') as f:
     #    urls = [line.strip() for line in f]
 
-    tranco_top_100 = ['twitch.tv']
+    #tranco_top_100 = ['windowsupdate.com', 'googletagmanager.com', 'reddit.com']
 
     c = Crawler()
 
@@ -577,10 +589,9 @@ def main():
         result_list.append(result)
 
         if result.skipped:
-            print('Skipped: ' + result.skipped_reason)
-
+            print('-> skipped: ' + result.skipped_reason)
         if result.failed:
-            print('Failed: ' + result.failed_reason)
+            print('-> failed: ' + result.failed_reason)
 
         result.save_screenshots()
         #subprocess.call(["tesseract", result.screenshot_filename, result.ocr_filename, "--oem", "1", "-l", "eng+deu"])
