@@ -91,6 +91,10 @@ class Crawler:
         
         # navigate to a specific page
         try:
+            # deny notifications because they might pop-up and block detection
+            self._deny_permission('notifications', self.result.hostname)
+
+            # open url
             self.tab.Page.navigate(url=url, _timeout=15)
 
             # we wait for our load event to be fired (see `_event_load_event_fired`)
@@ -177,6 +181,14 @@ class Crawler:
         page may still process some JavaScript.
         """
         self._is_loaded = True
+
+    def _deny_permission(self, permission, hostname):
+        self._set_permission(permission, 'denied', 'https://' + hostname + '/*')
+        self._set_permission(permission, 'denied', 'https://www.' + hostname + '/*')
+
+    def _set_permission(self, permission, value, url):
+        permission_descriptor = {'name': permission}
+        self.tab.Browser.setPermission(origin=url, permission=permission_descriptor, setting=value)
 
     def _highlight_node(self, node_id):
         """Highlight the given node with an overlay."""
@@ -501,7 +513,7 @@ def main():
     #with open('resources/urls.txt') as f:
     #    urls = [line.strip() for line in f]
 
-    #tranco_top_100 = ['forbes.com']
+    #tranco_top_100 = ['reddit.com']
 
     c = Crawler()
 
