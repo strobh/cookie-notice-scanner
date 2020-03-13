@@ -10,6 +10,8 @@ from urllib.parse import urlparse
 
 import abp.filters.parser
 from abp.filters import parse_filterlist
+from tranco import Tranco
+from langdetect import detect
 
 
 class WebpageResult:
@@ -20,6 +22,8 @@ class WebpageResult:
         self.hostname = parsed_url.hostname
         self.id = self.hostname
 
+        self.failed = False
+
         self.requests = []
         self.responses = []
         self.cookies = []
@@ -28,6 +32,9 @@ class WebpageResult:
         self.ocr_filename = "ocr/" + self.id
 
         self.cookie_notice_by_rules = []
+
+    def set_failed(self):
+        self.failed = True
 
     def add_request(self, request_url):
         self.requests.append({
@@ -83,21 +90,29 @@ class Crawler:
         self.tab = self._setup_tab()
         
         # navigate to a specific page
-        self.tab.Page.navigate(url=url, _timeout=15)
-        
-        # we wait for our load event to be fired (see `_event_load_event_fired`)
-        while not self._is_loaded:
-            self.tab.wait(0.1)
+        try:
+            self.tab.Page.navigate(url=url, _timeout=15)
 
-        # wait some time for events, after the page has been loaded to look
-        # for further requests from JavaScript
-        self.tab.wait(2)
+            # we wait for our load event to be fired (see `_event_load_event_fired`)
+            waited = 0
+            while not self._is_loaded and waited < 15:
+                self.tab.wait(0.1)
+                waited += 0.1
 
-        # get root node of document, is needed to be sure that the DOM is loaded
-        root_node = self.tab.DOM.getDocument()
+            if waited >= 15:
+                print('-> stopped waiting for load event')
 
-        # do analyses
-        self.do_analyses()
+            # wait some time for events, after the page has been loaded to look
+            # for further requests from JavaScript
+            self.tab.wait(3)
+
+            # get root node of document, is needed to be sure that the DOM is loaded
+            root_node = self.tab.DOM.getDocument()
+
+            # do analyses
+            self.do_analyses()
+        except pychrome.exceptions.TimeoutException:
+            self.result.set_failed()
 
         # stop and close the tab
         self.tab.stop()
@@ -193,6 +208,13 @@ class Crawler:
         return self.tab.DOM.resolveNode(nodeId=node_id).get('object').get('objectId')
 
     def do_analyses(self):
+        lang = self.detect_language()
+        if lang != 'en' and lang != 'de':
+            print('-> skipped language: ' + lang)
+            return
+
+        self.take_screenshot("original")
+
         #self.is_cmp_function_defined()
         #cookie_notices_node_ids, rules = self.find_cookie_notice_by_rules()
 
@@ -215,17 +237,29 @@ class Crawler:
         self.result.set_cookies(self._get_all_cookies())
         self._delete_all_cookies()
 
+    def detect_language(self):
+        result = self.tab.Runtime.evaluate(expression="document.body.innerText").get('result')
+        return detect(result.get('value'))
+
     def search_for_string(self, search_string):
         """Searches the DOM for the string `cookie` and returns all found nodes."""
 
         # stop execution of scripts to ensure that results do not change during search
         self.tab.Emulation.setScriptExecutionDisabled(value=True)
 
-        # search for the string in text
+        # search for the string in a text node
+        # take the parent of the text node (the element that contains the text)
+        # this is necessary if an element contains more than one text node!
+        # see for explanation:
+        # - https://stackoverflow.com/a/2994336
+        # - https://stackoverflow.com/a/11744783
         search_object = self.tab.DOM.performSearch(
-                query="//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '" + search_string + "')]")
-        node_ids = self.tab.DOM.getSearchResults(searchId=search_object.get('searchId'), fromIndex=0, toIndex=int(search_object.get('resultCount')))
-        node_ids = node_ids['nodeIds']
+                query="//*/text()[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '" + search_string + "')]/parent::*")
+
+        node_ids = []
+        if search_object.get('resultCount') != 0:
+            node_ids = self.tab.DOM.getSearchResults(searchId=search_object.get('searchId'), fromIndex=0, toIndex=int(search_object.get('resultCount')))
+            node_ids = node_ids['nodeIds']
 
         # resume execution of scripts
         self.tab.Emulation.setScriptExecutionDisabled(value=False)
@@ -294,7 +328,8 @@ class Crawler:
     def is_node_visible(self, node_id):
         # Source: https://stackoverflow.com/a/41698614
         # adapted to also look at child nodes (especially important for fixed 
-        # elements as their parents might not be visible themselves)
+        # elements as they might not be "visible" themselves when they have no 
+        # width or height)
         js_function = """
             function isVisible(elem) {
                 if (!elem) elem = this;
@@ -377,9 +412,6 @@ class Crawler:
             self._hide_highlight()
 
     def take_screenshot(self, name):
-        # stop execution of scripts
-        self.tab.Emulation.setScriptExecutionDisabled(value=True)
-
         # get the width and height of the viewport
         layout_metrics = self.tab.Page.getLayoutMetrics()
         viewport = layout_metrics.get('layoutViewport')
@@ -391,9 +423,6 @@ class Crawler:
 
         # take screenshot and store it
         self.result.add_screenshot(name, self.tab.Page.captureScreenshot(clip=screenshot_viewport)['data'])
-
-        # resume execution of scripts
-        self.tab.Emulation.setScriptExecutionDisabled(value=False)
 
 
 class AdBlockPlusFilter:
@@ -431,17 +460,24 @@ class AdBlockPlusFilter:
 
 
 def main():
-    urls = []
-    with open('resources/urls.txt') as f:
-        pass
-        urls = [line.strip() for line in f]
+    tranco = Tranco(cache=True, cache_dir='tranco')
+    tranco_list = tranco.list(date='2020-03-01')
+    tranco_top_100 = tranco_list.top(100)
+
+    #urls = []
+    #with open('resources/urls.txt') as f:
+    #    urls = [line.strip() for line in f]
 
     c = Crawler()
 
     result_list = []
-    for url in urls:
+    for rank, url in enumerate(tranco_top_100):
+        print("#" + str(rank) + ": " + url)
         result = c.crawl_page('https://' + url)
         result_list.append(result)
+
+        if (result.failed):
+            print("-> failed")
 
         result.save_screenshots()
         #subprocess.call(["tesseract", result.screenshot_filename, result.ocr_filename, "--oem", "1", "-l", "eng+deu"])

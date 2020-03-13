@@ -9,6 +9,8 @@ verify_ssl = true
 pychrome = "*"
 pprint = "*"
 python-abp = "*"
+tranco = "*"
+langdetect = "*"
 
 [requires]
 python_version = "3.7"
