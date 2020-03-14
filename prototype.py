@@ -586,15 +586,17 @@ def main():
     for rank, url in enumerate(tranco_top_100):
         print('#' + str(rank) + ': ' + url)
         result = c.crawl_page('https://' + url)
-        result_list.append(result)
 
-        if result.skipped:
-            print('-> skipped: ' + result.skipped_reason)
         if result.failed:
             print('-> failed: ' + result.failed_reason)
+            continue
+        if result.skipped:
+            print('-> skipped: ' + result.skipped_reason)
+            continue
 
         result.save_screenshots()
         #subprocess.call(["tesseract", result.screenshot_filename, result.ocr_filename, "--oem", "1", "-l", "eng+deu"])
+        result_list.append(result)
 
 
 if __name__ == '__main__':
