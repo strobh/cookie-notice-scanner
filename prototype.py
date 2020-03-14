@@ -1,24 +1,23 @@
 #!/usr/bin/env python3
 
-import time
-import pychrome
 import base64
+import multiprocessing as mp
 import subprocess
-
-from pprint import pprint
+from functools import partial
+from multiprocessing import Lock
 from urllib.parse import urlparse
 
-import abp.filters.parser
+import pychrome
 from abp.filters import parse_filterlist
-from tranco import Tranco
+from abp.filters.parser import Filter
 from langdetect import detect
-
-import multiprocessing as mp
-from multiprocessing import Lock
+from pprint import pprint
+from tranco import Tranco
 
 
 class WebpageResult:
-    def __init__(self, url=''):
+    def __init__(self, rank=None, url=''):
+        self.rank = rank
         self.url = url
         
         parsed_url = urlparse(self.url)
@@ -74,30 +73,23 @@ class WebpageResult:
     def add_screenshot(self, name, screenshot):
         self.screenshots[name] = screenshot
 
-    def save_screenshots(self):
-        for name in self.screenshots.keys():
-            self.save_screenshot(name)
-
-    def save_screenshot(self, name):
-        with open(self.get_filename_for_screenshot(name), "wb") as file:
-            file.write(base64.b64decode(self.screenshots[name]))
-
-    def get_filename_for_screenshot(self, name):
-        return "screenshots/" + self.id + "-" + name + ".png"
+    def get_screenshots(self):
+        return self.screenshots
 
 
-class SiteCrawler:
-    def __init__(self, tab, abp_filter):
+class WebpageCrawler:
+    def __init__(self, tab, abp_filter, webpage):
         self.tab = tab
         self.abp_filter = abp_filter
+        self.webpage = webpage
 
-    def crawl_page(self, url, lock_m, lock_n, lock_l):
+    def get_result(self):
+        return self.webpage
+
+    def crawl(self):
         # initialize `_is_loaded` variable to `False`
         # it will be set to `True` when the `loadEventFired` event occurs
         self._is_loaded = False
-
-        # create the result object
-        self.result = WebpageResult(url=url)
 
         # setup the tab
         self._setup_tab()
@@ -105,38 +97,37 @@ class SiteCrawler:
         
         try:
             # deny notifications because they might pop-up and block detection
-            self._deny_permission('notifications', self.result.hostname)
+            self._deny_permission('notifications', self.webpage.hostname)
 
             # open url
-            self.tab.Page.navigate(url=url, _timeout=15)
+            self.tab.Page.navigate(url=self.webpage.url, _timeout=15)
 
             # we wait for our load event to be fired (see `_event_load_event_fired`)
             waited = 0
-            while not self._is_loaded and waited < 15:
+            while not self._is_loaded and waited < 30:
                 self.tab.wait(0.1)
                 waited += 0.1
 
-            if waited >= 15:
-                self.result.set_stopped_waiting('load event')
+            if waited >= 30:
+                self.webpage.set_stopped_waiting('load event')
 
-            # wait some time for events, after the page has been loaded to look
-            # for further requests from JavaScript
+            # wait  for JavaScript code to be run, after the page has been loaded
             self.tab.wait(3)
 
             # get root node of document, is needed to be sure that the DOM is loaded
-            self.root_node = self.tab.DOM.getDocument().get('root')
+            self.tab.DOM.getDocument()
 
-            # do analyses
-            self.do_analyses(lock_m, lock_n, lock_l)
+            # detect cookie notices
+            self.detect_cookie_notices()
         except pychrome.exceptions.TimeoutException as e:
-            self.result.set_failed("timeout", e)
+            self.webpage.set_failed("timeout", e)
         except pychrome.exceptions.CallMethodException as e:
-            self.result.set_failed("call_method", e)
+            self.webpage.set_failed("call_method", e)
 
         # stop and close the tab
         self.tab.stop()
 
-        return self.result
+        return self.webpage
 
     def _setup_tab(self):
         # set callbacks for request and response logging
@@ -171,7 +162,7 @@ class SiteCrawler:
         there can still be connection issues.
         """
         url = request['url']
-        self.result.add_request(request_url=url)
+        self.webpage.add_request(request_url=url)
 
         # the request id of the first request is stored to be able to detect failures
         if self.requestId == None:
@@ -187,14 +178,14 @@ class SiteCrawler:
         mime_type = response['mimeType']
         status = response['status']
         headers = response['headers']
-        self.result.add_response(requested_url=url, status=status, mime_type=mime_type, headers=headers)
+        self.webpage.add_response(requested_url=url, status=status, mime_type=mime_type, headers=headers)
 
         if requestId == self.requestId and (str(status).startswith('4') or str(status).startswith('5')):
-            self.result.set_failed('status code `' + str(status) + '`')
+            self.webpage.set_failed('status code `' + str(status) + '`')
 
     def _event_loading_failed(self, requestId, errorText, **kwargs):
         if requestId == self.requestId:
-            self.result.set_failed('loading failed `' + errorText + '`')
+            self.webpage.set_failed('loading failed `' + errorText + '`')
 
     def _event_load_event_fired(self, timestamp, **kwargs):
         """Will be called when the page sends an load event.
@@ -212,62 +203,12 @@ class SiteCrawler:
         permission_descriptor = {'name': permission}
         self.tab.Browser.setPermission(origin=url, permission=permission_descriptor, setting=value)
 
-    def _highlight_node(self, node_id):
-        """Highlight the given node with an overlay."""
+    def detect_cookie_notices(self):
+        global lock_m, lock_n, lock_l
 
-        color_content = {'r': 152, 'g': 196, 'b': 234, 'a': 0.5}
-        color_padding = {'r': 184, 'g': 226, 'b': 183, 'a': 0.5}
-        color_margin = {'r': 253, 'g': 201, 'b': 148, 'a': 0.5}
-        highlightConfig = {'contentColor': color_content, 'paddingColor': color_padding, 'marginColor': color_margin}
-        self.tab.Overlay.highlightNode(highlightConfig=highlightConfig, nodeId=node_id)
-
-    def _hide_highlight(self):
-        self.tab.Overlay.hideHighlight()
-
-    def _scroll_down(self, delta_y):
-        self.tab.Input.emulateTouchFromMouseEvent(type="mouseWheel", x=1, y=1, button="none", deltaX=0, deltaY=-1*delta_y)
-        self.tab.wait(0.1)
-
-    def _get_all_cookies(self):
-        return self.tab.Network.getAllCookies().get('cookies')
-
-    def _delete_all_cookies(self):
-        while(len(self._get_all_cookies()) != 0):
-            for cookie in self._get_all_cookies():
-                self.tab.Network.deleteCookies(name=cookie.get('name'), domain=cookie.get('domain'), path=cookie.get('path'))
-
-    def _get_root_frame_id(self):
-        return self.tab.Page.getFrameTree().get('frameTree').get('frame').get('id')
-
-    def _get_node_id_for_remote_object_id(self, remote_object_id):
-        return self.tab.DOM.requestNode(objectId=remote_object_id).get('nodeId')
-
-    def _get_remote_object_id_for_node_id(self, node_id):
-        return self.tab.DOM.resolveNode(nodeId=node_id).get('object').get('objectId')
-
-    def _get_node_name(self, node_id):
-        return self.tab.DOM.describeNode(nodeId=node_id).get('node').get('nodeName').lower()
-
-    def _is_script_or_style_node(self, node_id):
-        node_name = self._get_node_name(node_id)
-        return node_name == 'script' or node_name == 'style'
-
-    def _is_html_node(self, node_id):
-        return self._get_node_name(node_id) == 'html'
-
-    def _is_inline_element(self, node_id):
-        inline_elements = [
-            'a', 'abbr', 'acronym', 'b', 'bdo', 'big', 'br', 'button', 'cite',
-            'code', 'dfn', 'em', 'i', 'img', 'input', 'kbd', 'label', 'map',
-            'object', 'output', 'q', 'samp', 'script', 'select', 'small',
-            'span', 'strong', 'sub', 'sup', 'textarea', 'time', 'tt', 'var'
-        ]
-        return self._get_node_name(node_id) in inline_elements
-
-    def do_analyses(self, lock_m, lock_n, lock_l):
         lang = self.detect_language()
         if lang != 'en' and lang != 'de':
-            self.result.set_skipped('unimplemented language `' + lang + '`')
+            self.webpage.set_skipped('unimplemented language `' + lang + '`')
             return
 
         # check whether the consent management platform is used
@@ -275,26 +216,28 @@ class SiteCrawler:
         is_cmp_defined = self.is_cmp_function_defined()
 
         # find cookie notice by using AdblockPlus rules
-        cookie_notice_rule_node_ids = self.find_cookie_notice_by_rules()
+        cookie_notice_rule_node_ids = set(self.find_cookie_notice_by_rules())
 
         # find string `cookie` in nodes and store the closest parent block element
         cookie_node_ids = self.search_for_string('cookie')
+        cookie_node_ids = [node_id for node_id in cookie_node_ids if self.is_node_visible(node_id)]
         cookie_node_ids = set([self.find_parent_block_element(node_id) for node_id in cookie_node_ids])
 
         # find fixed parent nodes (i.e. having style `position: fixed`) with string `cookie`
-        cookie_notice_fixed_node_ids = set([])
+        cookie_notice_fixed_node_ids = set()
         for node_id in cookie_node_ids:
             fp_result = self.find_fixed_parent(node_id)
             if fp_result.get('has_fixed_parent'):
                 cookie_notice_fixed_node_ids.add(fp_result.get('fixed_parent'))
 
         # find full-width parent nodes with string `cookie`
-        cookie_notice_full_width_node_ids = set([])
+        cookie_notice_full_width_node_ids = set()
         for node_id in cookie_node_ids:
             fwp_result = self.find_full_width_parent(node_id)
             if fwp_result.get('parent_node_exists'):
                 cookie_notice_full_width_node_ids.add(fwp_result.get('parent_node'))
 
+        # triple mutex
         with lock_l:
             lock_n.acquire()
             with lock_m:
@@ -302,15 +245,18 @@ class SiteCrawler:
                 self.tab.Page.bringToFront()
                 self.take_screenshot('original')
                 self.take_screenshots_of_visible_nodes(cookie_notice_rule_node_ids, 'rules')
-                self.take_screenshots_of_visible_nodes(cookie_node_ids, 'cookie-string')
+                #self.take_screenshots_of_visible_nodes(cookie_node_ids, 'cookie-string')
                 self.take_screenshots_of_visible_nodes(cookie_notice_fixed_node_ids, 'fixed-parent')
                 self.take_screenshots_of_visible_nodes(cookie_notice_full_width_node_ids, 'full-width-parent')
 
         # save screenshots
-        self.result.save_screenshots()
+        self.save_screenshots()
+
+        # ocr with tesseract
+        #subprocess.call(["tesseract", result.screenshot_filename, result.ocr_filename, "--oem", "1", "-l", "eng+deu"])
 
         # get cookies and delete them afterwards
-        self.result.set_cookies(self._get_all_cookies())
+        self.webpage.set_cookies(self._get_all_cookies())
         self._delete_all_cookies()
 
     def detect_language(self):
@@ -520,7 +466,7 @@ class SiteCrawler:
         """
         node_ids = []
         root_node_id = self.tab.DOM.getDocument().get('root').get('nodeId')
-        for rule in self.abp_filter.get_applicable_rules(self.result.hostname):
+        for rule in self.abp_filter.get_applicable_rules(self.webpage.hostname):
             search_results = self.tab.DOM.querySelectorAll(nodeId=root_node_id, selector=rule.selector.get('value'))
             node_ids = node_ids + search_results.get('nodeIds')
 
@@ -561,7 +507,10 @@ class SiteCrawler:
                     elem.getBoundingClientRect().width === 0) {
                     visible = false;
                 }
-                const elemCenter   = {
+                if (elem.offsetWidth === 0 || elem.offsetHeight === 0) {
+                    visible = false;
+                }
+                const elemCenter = {
                     x: elem.getBoundingClientRect().left + elem.offsetWidth / 2,
                     y: elem.getBoundingClientRect().top + elem.offsetHeight / 2
                 };
@@ -570,11 +519,13 @@ class SiteCrawler:
                 if (elemCenter.y < 0) visible = false;
                 if (elemCenter.y > (document.documentElement.clientHeight || window.innerHeight)) visible = false;
 
-                let pointContainer = document.elementFromPoint(elemCenter.x, elemCenter.y);
-                do {
-                    if (pointContainer === elem) return elem;
-                    if (!pointContainer) break;
-                } while (pointContainer = pointContainer.parentNode);
+                if (visible === true) {
+                    let pointContainer = document.elementFromPoint(elemCenter.x, elemCenter.y);
+                    do {
+                        if (pointContainer === elem) return elem;
+                        if (!pointContainer) break;
+                    } while (pointContainer = pointContainer.parentNode);
+                }
 
                 // check the child nodes
                 if (!visible) {
@@ -582,7 +533,7 @@ class SiteCrawler:
                     for (var i = 0; i < childrenCount; i++) {
                         let isChildVisible = isVisible(elem.childNodes[i]);
                         if (isChildVisible) {
-                            return elem.childNodes[i];
+                            return isChildVisible;
                         }
                     }
                 }
@@ -635,7 +586,70 @@ class SiteCrawler:
         screenshot_viewport = {'x': x, 'y': y, 'width': width, 'height': height, 'scale': 1}
 
         # take screenshot and store it
-        self.result.add_screenshot(name, self.tab.Page.captureScreenshot(clip=screenshot_viewport)['data'])
+        self.webpage.add_screenshot(name, self.tab.Page.captureScreenshot(clip=screenshot_viewport)['data'])
+
+    def _highlight_node(self, node_id):
+        """Highlight the given node with an overlay."""
+
+        color_content = {'r': 152, 'g': 196, 'b': 234, 'a': 0.5}
+        color_padding = {'r': 184, 'g': 226, 'b': 183, 'a': 0.5}
+        color_margin = {'r': 253, 'g': 201, 'b': 148, 'a': 0.5}
+        highlightConfig = {'contentColor': color_content, 'paddingColor': color_padding, 'marginColor': color_margin}
+        self.tab.Overlay.highlightNode(highlightConfig=highlightConfig, nodeId=node_id)
+
+    def _hide_highlight(self):
+        self.tab.Overlay.hideHighlight()
+
+    def save_screenshots(self):
+        for name, screenshot in self.webpage.get_screenshots().items():
+            self._save_screenshot(name, screenshot)
+
+    def _save_screenshot(self, name, screenshot):
+        with open(self._get_filename_for_screenshot(name), "wb") as file:
+            file.write(base64.b64decode(screenshot))
+
+    def _get_filename_for_screenshot(self, name):
+        return "screenshots/" + self.webpage.id + "-" + name + ".png"
+
+    def _scroll_down(self, delta_y):
+        self.tab.Input.emulateTouchFromMouseEvent(type="mouseWheel", x=1, y=1, button="none", deltaX=0, deltaY=-1*delta_y)
+        self.tab.wait(0.1)
+
+    def _get_all_cookies(self):
+        return self.tab.Network.getAllCookies().get('cookies')
+
+    def _delete_all_cookies(self):
+        while(len(self._get_all_cookies()) != 0):
+            for cookie in self._get_all_cookies():
+                self.tab.Network.deleteCookies(name=cookie.get('name'), domain=cookie.get('domain'), path=cookie.get('path'))
+
+    def _get_root_frame_id(self):
+        return self.tab.Page.getFrameTree().get('frameTree').get('frame').get('id')
+
+    def _get_node_id_for_remote_object_id(self, remote_object_id):
+        return self.tab.DOM.requestNode(objectId=remote_object_id).get('nodeId')
+
+    def _get_remote_object_id_for_node_id(self, node_id):
+        return self.tab.DOM.resolveNode(nodeId=node_id).get('object').get('objectId')
+
+    def _get_node_name(self, node_id):
+        return self.tab.DOM.describeNode(nodeId=node_id).get('node').get('nodeName').lower()
+
+    def _is_script_or_style_node(self, node_id):
+        node_name = self._get_node_name(node_id)
+        return node_name == 'script' or node_name == 'style'
+
+    def _is_html_node(self, node_id):
+        return self._get_node_name(node_id) == 'html'
+
+    def _is_inline_element(self, node_id):
+        inline_elements = [
+            'a', 'abbr', 'acronym', 'b', 'bdo', 'big', 'br', 'button', 'cite',
+            'code', 'dfn', 'em', 'i', 'img', 'input', 'kbd', 'label', 'map',
+            'object', 'output', 'q', 'samp', 'script', 'select', 'small',
+            'span', 'strong', 'sub', 'sup', 'textarea', 'time', 'tt', 'var'
+        ]
+        return self._get_node_name(node_id) in inline_elements
 
 
 class Browser:
@@ -646,17 +660,20 @@ class Browser:
         # create helpers
         self.abp_filter = AdBlockPlusFilter('resources/cookie-notice-css-rules.txt')
 
-    def crawl_page(self, url, lock_m, lock_n, lock_l):
+    def crawl_page(self, webpage):
+        global lock_m, lock_n, lock_l
+
+        # triple mutex
         lock_n.acquire()
         with lock_m:
             lock_n.release()
             tab = self.browser.new_tab()
 
-        site_crawler = SiteCrawler(tab, self.abp_filter)
-        result = site_crawler.crawl_page(url, lock_m, lock_n, lock_l)
+        page_crawler = WebpageCrawler(tab=tab, abp_filter=self.abp_filter, webpage=webpage)
+        page_crawler.crawl()
 
         self.browser.close_tab(tab)
-        return result
+        return page_crawler.get_result()
 
 
 class AdBlockPlusFilter:
@@ -665,7 +682,7 @@ class AdBlockPlusFilter:
             # we only need filters with type css
             # other instances are Header, Metadata, etc.
             # other type is url-pattern which is used to block script files
-            self._rules = [rule for rule in parse_filterlist(filterlist) if isinstance(rule, abp.filters.parser.Filter) and rule.selector.get('type') == 'css']
+            self._rules = [rule for rule in parse_filterlist(filterlist) if isinstance(rule, Filter) and rule.selector.get('type') == 'css']
 
     def get_applicable_rules(self, hostname):
         return [rule for rule in self._rules if self._is_rule_applicable(rule, hostname)]
@@ -702,52 +719,37 @@ if __name__ == '__main__':
     #with open('resources/urls.txt') as f:
     #    urls = [line.strip() for line in f]
 
-    #tranco_top_100 = ['facebook.com', 'twitter.com', 'twitch.tv', 'microsoft.com', 'reddit.com', 'zeit.de']
+    #tranco_top_100 = ['cnn.com'] # 'facebook.com', 'twitter.com', 'twitch.tv', 'microsoft.com', 'reddit.com', 'zeit.de', 'godaddy.com', 'dropbox.com',
 
-    browser = Browser()
-
-    # triple mutex: https://stackoverflow.com/a/11673600
+    # triple mutex:
+    # https://stackoverflow.com/a/11673600
+    # https://stackoverflow.com/a/28721419
     lock_m = Lock()
     lock_n = Lock()
     lock_l = Lock()
 
-    def f_crawl_page(url):
-        global browser, lock_m, lock_n, lock_l
-        return browser.crawl_page(url, lock_m, lock_n, lock_l)
-
+    # create multiprocessor pool: eight tabs are processed in parallel at most
     pool = mp.Pool(8)
-    results = []
-    for url in tranco_top_100:
-        results.append(pool.apply_async(f_crawl_page, args=('https://' + url,)))
 
+    # create the browser and a helper function to crawl pages
+    browser = Browser()
+    f_crawl_page = partial(Browser.crawl_page, browser)
+
+    # crawl the pages in parallel
+    results = []
+    for rank, url in enumerate(tranco_top_100):
+        webpage = WebpageResult(rank=rank, url='https://' + url)
+        results.append(pool.apply_async(f_crawl_page, args=(webpage,)))
     pool.close()
     pool.join()
 
+    # get results
     results = [result.get() for result in results]
-
     for result in results:
-        print(result.url)
+        print('#' + str(result.rank) + ': ' + result.url)
         if result.stopped_waiting:
             print('-> stopped waiting for ' + result.stopped_waiting_reason)
         if result.failed:
             print('-> failed: ' + result.failed_reason)
-            continue
         if result.skipped:
             print('-> skipped: ' + result.skipped_reason)
-            continue
-
-    """result_list = []
-    for rank, url in enumerate(tranco_top_100):
-        print('#' + str(rank) + ': ' + url)
-        result = browser.crawl_page('https://' + url)
-
-        if result.failed:
-            print('-> failed: ' + result.failed_reason)
-            continue
-        if result.skipped:
-            print('-> skipped: ' + result.skipped_reason)
-            continue
-
-        result.save_screenshots()
-        #subprocess.call(["tesseract", result.screenshot_filename, result.ocr_filename, "--oem", "1", "-l", "eng+deu"])
-        result_list.append(result)"""
