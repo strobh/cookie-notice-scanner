@@ -283,13 +283,21 @@ class Crawler:
         cookie_node_ids = set([self.find_parent_block_element(node_id) for node_id in cookie_node_ids])
         self.take_screenshots_of_visible_nodes(cookie_node_ids, 'cookie-string')
 
-        # find fixed parents nodes (i.e. having style `position: fixed`) with string `cookie`
+        # find fixed parent nodes (i.e. having style `position: fixed`) with string `cookie`
         cookie_notice_fixed_node_ids = set([])
         for node_id in cookie_node_ids:
             fp_result = self.find_fixed_parent(node_id)
             if fp_result.get('has_fixed_parent'):
                 cookie_notice_fixed_node_ids.add(fp_result.get('fixed_parent'))
         self.take_screenshots_of_visible_nodes(cookie_notice_fixed_node_ids, 'fixed-parent')
+
+        # find full-width parent nodes with string `cookie`
+        cookie_notice_full_width_node_ids = set([])
+        for node_id in cookie_node_ids:
+            fwp_result = self.find_full_width_parent(node_id)
+            if fwp_result.get('parent_node_exists'):
+                cookie_notice_full_width_node_ids.add(fwp_result.get('parent_node'))
+        self.take_screenshots_of_visible_nodes(cookie_notice_full_width_node_ids, 'full-width-parent')
 
         # get cookies and delete them afterwards
         self.result.set_cookies(self._get_all_cookies())
@@ -339,16 +347,11 @@ class Crawler:
         if not self._is_inline_element(node_id):
             return node_id
 
-        js_function= """
+        js_function = """
             function findClosestBlockElement(elem) {
-                let _inline_elements = [
-                    'a', 'abbr', 'acronym', 'b', 'bdo', 'big', 'br', 'button', 'cite',
-                    'code', 'dfn', 'em', 'i', 'img', 'input', 'kbd', 'label', 'map',
-                    'object', 'output', 'q', 'samp', 'script', 'select', 'small',
-                    'span', 'strong', 'sub', 'sup', 'textarea', 'time', 'tt', 'var'];
-
                 function isInlineElement(elem) {
-                    return _inline_elements.includes(elem.nodeName.toLowerCase());
+                    const style = getComputedStyle(elem);
+                    return style.display == 'inline';
                 }
 
                 if (!elem) elem = this;
@@ -362,6 +365,96 @@ class Crawler:
         remote_object_id = self._get_remote_object_id_for_node_id(node_id)
         result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
         return self._get_node_id_for_remote_object_id(result.get('objectId'))
+
+    def find_full_width_parent(self, node_id):
+        js_function = """
+            function findFullWidthParent(elem) {
+                function getWidth(elem) {
+                    const style = getComputedStyle(elem);
+                    if (style.boxSizing == 'content-box') {
+                        return parseInt(style.width) +
+                            parseInt(style.paddingLeft) + parseInt(style.paddingRight) +
+                            parseInt(style.borderLeftWidth) + parseInt(style.borderRightWidth) +
+                            parseInt(style.marginLeft) + parseInt(style.marginRight);
+                    } else {
+                        return parseInt(style.width) + parseInt(style.marginLeft) + parseInt(style.marginRight);
+                    }
+                }
+
+                function getHeight(elem) {
+                    const style = getComputedStyle(elem);
+                    if (style.boxSizing == 'content-box') {
+                        return parseInt(style.height) +
+                            parseInt(style.paddingTop) + parseInt(style.paddingBottom) +
+                            parseInt(style.borderTopWidth) + parseInt(style.borderBottomWidth) +
+                            parseInt(style.marginTop) + parseInt(style.marginBottom);
+                    } else {
+                        return parseInt(style.height) + parseInt(style.marginTop) + parseInt(style.marginBottom);
+                    }
+                }
+
+                function getHorizontalSpacing(elem) {
+                    const style = getComputedStyle(elem);
+                    return parseInt(style.paddingLeft) + parseInt(style.paddingRight) +
+                        parseInt(style.borderLeftWidth) + parseInt(style.borderRightWidth) +
+                        parseInt(style.marginLeft) + parseInt(style.marginRight);
+                }
+
+                function getVerticalSpacing(elem) {
+                    const style = getComputedStyle(elem);
+                    return parseInt(style.paddingTop) + parseInt(style.paddingBottom) +
+                        parseInt(style.borderTopWidth) + parseInt(style.borderBottomWidth) +
+                        parseInt(style.marginTop) + parseInt(style.marginBottom);
+                }
+
+                function getWidthDiff(outerElem, innerElem) {
+                    return getWidth(outerElem) - getWidth(innerElem);
+                }
+
+                function getHeightDiff(outerElem, innerElem) {
+                    return getHeight(outerElem) - getHeight(innerElem);
+                }
+
+                function isParentWiderThanItsSpacing(outerElem, innerElem) {
+                    return getWidthDiff(outerElem, innerElem) > getHorizontalSpacing(outerElem);
+                }
+
+                function isParentHigherThanItsSpacing(outerElem, innerElem) {
+                    let allowedIncrease = Math.max(0.25*getHeight(innerElem), 20);
+                    return getHeightDiff(outerElem, innerElem) > (getVerticalSpacing(outerElem) + allowedIncrease);
+                }
+
+                if (!elem) elem = this;
+                while(elem && elem !== document) {
+                    parent = elem.parentNode;
+                    if (isParentHigherThanItsSpacing(parent, elem)) {
+                        break;
+                    }
+                    elem = parent;
+                }
+
+                if (parseInt(getComputedStyle(document.body).width) <= getWidth(elem)) {
+                    return elem;
+                } else {
+                    return false;
+                }
+            }"""
+
+        remote_object_id = self._get_remote_object_id_for_node_id(node_id)
+        result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
+
+        # if a boolean is returned, we did not find a full-width small parent
+        if result.get('type') == 'boolean':
+            return {
+                'parent_node_exists': result.get('value'),
+                'parent_node': None,
+            }
+        # otherwise, we found one
+        else:
+            return {
+                'parent_node_exists': True,
+                'parent_node': self._get_node_id_for_remote_object_id(result.get('objectId')),
+            }
 
     def find_fixed_parent(self, node_id):
         js_function = """
@@ -578,7 +671,7 @@ def main():
     #with open('resources/urls.txt') as f:
     #    urls = [line.strip() for line in f]
 
-    #tranco_top_100 = ['windowsupdate.com', 'googletagmanager.com', 'reddit.com']
+    #tranco_top_100 = ['facebook.com']
 
     c = Crawler()
 
