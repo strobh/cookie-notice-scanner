@@ -13,6 +13,9 @@ from abp.filters import parse_filterlist
 from tranco import Tranco
 from langdetect import detect
 
+import multiprocessing as mp
+from multiprocessing import Lock
+
 
 class WebpageResult:
     def __init__(self, url=''):
@@ -29,6 +32,9 @@ class WebpageResult:
         self.skipped = False
         self.skipped_reason = None
 
+        self.stopped_waiting = False
+        self.stopped_waiting_reason = None
+
         self.requests = []
         self.responses = []
         self.cookies = []
@@ -44,6 +50,10 @@ class WebpageResult:
     def set_skipped(self, reason):
         self.skipped = True
         self.skipped_reason = reason
+
+    def set_stopped_waiting(self, reason):
+        self.stopped_waiting = True
+        self.stopped_waiting_reason = reason
 
     def add_request(self, request_url):
         self.requests.append({
@@ -76,15 +86,12 @@ class WebpageResult:
         return "screenshots/" + self.id + "-" + name + ".png"
 
 
-class Crawler:
-    def __init__(self, debugger_url='http://127.0.0.1:9222'):
-        # create a browser instance which controls chromium
-        self.browser = pychrome.Browser(url=debugger_url)
+class SiteCrawler:
+    def __init__(self, tab, abp_filter):
+        self.tab = tab
+        self.abp_filter = abp_filter
 
-        # create helpers
-        self.abp_filter = AdBlockPlusFilter('resources/cookie-notice-css-rules.txt')
-
-    def crawl_page(self, url):
+    def crawl_page(self, url, lock_m, lock_n, lock_l):
         # initialize `_is_loaded` variable to `False`
         # it will be set to `True` when the `loadEventFired` event occurs
         self._is_loaded = False
@@ -92,15 +99,15 @@ class Crawler:
         # create the result object
         self.result = WebpageResult(url=url)
 
-        # create and setup a tab
-        self.tab = self._setup_tab()
+        # setup the tab
+        self._setup_tab()
+        self.requestId = None
         
         try:
             # deny notifications because they might pop-up and block detection
             self._deny_permission('notifications', self.result.hostname)
 
             # open url
-            self.requestId = None
             self.tab.Page.navigate(url=url, _timeout=15)
 
             # we wait for our load event to be fired (see `_event_load_event_fired`)
@@ -110,7 +117,7 @@ class Crawler:
                 waited += 0.1
 
             if waited >= 15:
-                print('-> stopped waiting for load event')
+                self.result.set_stopped_waiting('load event')
 
             # wait some time for events, after the page has been loaded to look
             # for further requests from JavaScript
@@ -120,7 +127,7 @@ class Crawler:
             self.root_node = self.tab.DOM.getDocument().get('root')
 
             # do analyses
-            self.do_analyses()
+            self.do_analyses(lock_m, lock_n, lock_l)
         except pychrome.exceptions.TimeoutException as e:
             self.result.set_failed("timeout", e)
         except pychrome.exceptions.CallMethodException as e:
@@ -128,36 +135,31 @@ class Crawler:
 
         # stop and close the tab
         self.tab.stop()
-        self.browser.close_tab(self.tab)
 
         return self.result
 
     def _setup_tab(self):
-        tab = self.browser.new_tab()
-
         # set callbacks for request and response logging
-        tab.Network.requestWillBeSent = self._event_request_will_be_sent
-        tab.Network.responseReceived = self._event_response_received
-        tab.Network.loadingFailed = self._event_loading_failed
-        tab.Page.loadEventFired = self._event_load_event_fired
+        self.tab.Network.requestWillBeSent = self._event_request_will_be_sent
+        self.tab.Network.responseReceived = self._event_response_received
+        self.tab.Network.loadingFailed = self._event_loading_failed
+        self.tab.Page.loadEventFired = self._event_load_event_fired
         
         # start our tab after callbacks have been registered
-        tab.start()
+        self.tab.start()
         
         # enable network notifications for all request/response so our
         # callbacks actually receive some data
-        tab.Network.enable()
+        self.tab.Network.enable()
 
         # enable page domain notifications so our load_event_fired
         # callback is called when the page is loaded
-        tab.Page.enable()
+        self.tab.Page.enable()
 
         # enable DOM, Runtime and Overlay
-        tab.DOM.enable()
-        tab.Runtime.enable()
-        tab.Overlay.enable()
-
-        return tab
+        self.tab.DOM.enable()
+        self.tab.Runtime.enable()
+        self.tab.Overlay.enable()
 
     def _event_request_will_be_sent(self, request, requestId, **kwargs):
         """Will be called when a request is about to be sent.
@@ -262,26 +264,22 @@ class Crawler:
         ]
         return self._get_node_name(node_id) in inline_elements
 
-    def do_analyses(self):
+    def do_analyses(self, lock_m, lock_n, lock_l):
         lang = self.detect_language()
         if lang != 'en' and lang != 'de':
             self.result.set_skipped('unimplemented language `' + lang + '`')
             return
-
-        self.take_screenshot('original')
 
         # check whether the consent management platform is used
         # -> there should be a cookie notice
         is_cmp_defined = self.is_cmp_function_defined()
 
         # find cookie notice by using AdblockPlus rules
-        #cookie_notice_rule_node_ids = self.find_cookie_notice_by_rules()
-        #self.take_screenshots_of_visible_nodes(cookie_notice_rule_node_ids, 'rules')
+        cookie_notice_rule_node_ids = self.find_cookie_notice_by_rules()
 
         # find string `cookie` in nodes and store the closest parent block element
         cookie_node_ids = self.search_for_string('cookie')
         cookie_node_ids = set([self.find_parent_block_element(node_id) for node_id in cookie_node_ids])
-        self.take_screenshots_of_visible_nodes(cookie_node_ids, 'cookie-string')
 
         # find fixed parent nodes (i.e. having style `position: fixed`) with string `cookie`
         cookie_notice_fixed_node_ids = set([])
@@ -289,7 +287,6 @@ class Crawler:
             fp_result = self.find_fixed_parent(node_id)
             if fp_result.get('has_fixed_parent'):
                 cookie_notice_fixed_node_ids.add(fp_result.get('fixed_parent'))
-        self.take_screenshots_of_visible_nodes(cookie_notice_fixed_node_ids, 'fixed-parent')
 
         # find full-width parent nodes with string `cookie`
         cookie_notice_full_width_node_ids = set([])
@@ -297,7 +294,20 @@ class Crawler:
             fwp_result = self.find_full_width_parent(node_id)
             if fwp_result.get('parent_node_exists'):
                 cookie_notice_full_width_node_ids.add(fwp_result.get('parent_node'))
-        self.take_screenshots_of_visible_nodes(cookie_notice_full_width_node_ids, 'full-width-parent')
+
+        with lock_l:
+            lock_n.acquire()
+            with lock_m:
+                lock_n.release()
+                self.tab.Page.bringToFront()
+                self.take_screenshot('original')
+                self.take_screenshots_of_visible_nodes(cookie_notice_rule_node_ids, 'rules')
+                self.take_screenshots_of_visible_nodes(cookie_node_ids, 'cookie-string')
+                self.take_screenshots_of_visible_nodes(cookie_notice_fixed_node_ids, 'fixed-parent')
+                self.take_screenshots_of_visible_nodes(cookie_notice_full_width_node_ids, 'full-width-parent')
+
+        # save screenshots
+        self.result.save_screenshots()
 
         # get cookies and delete them afterwards
         self.result.set_cookies(self._get_all_cookies())
@@ -628,6 +638,27 @@ class Crawler:
         self.result.add_screenshot(name, self.tab.Page.captureScreenshot(clip=screenshot_viewport)['data'])
 
 
+class Browser:
+    def __init__(self, debugger_url='http://127.0.0.1:9222'):
+        # create a browser instance which controls chromium
+        self.browser = pychrome.Browser(url=debugger_url)
+
+        # create helpers
+        self.abp_filter = AdBlockPlusFilter('resources/cookie-notice-css-rules.txt')
+
+    def crawl_page(self, url, lock_m, lock_n, lock_l):
+        lock_n.acquire()
+        with lock_m:
+            lock_n.release()
+            tab = self.browser.new_tab()
+
+        site_crawler = SiteCrawler(tab, self.abp_filter)
+        result = site_crawler.crawl_page(url, lock_m, lock_n, lock_l)
+
+        self.browser.close_tab(tab)
+        return result
+
+
 class AdBlockPlusFilter:
     def __init__(self, rules_filename):
         with open(rules_filename) as filterlist:
@@ -662,23 +693,53 @@ class AdBlockPlusFilter:
         return False
 
 
-def main():
+if __name__ == '__main__':
     tranco = Tranco(cache=True, cache_dir='tranco')
     tranco_list = tranco.list(date='2020-03-01')
-    tranco_top_100 = tranco_list.top(20)
+    tranco_top_100 = tranco_list.top(100)
 
     #urls = []
     #with open('resources/urls.txt') as f:
     #    urls = [line.strip() for line in f]
 
-    #tranco_top_100 = ['facebook.com']
+    #tranco_top_100 = ['facebook.com', 'twitter.com', 'twitch.tv', 'microsoft.com', 'reddit.com', 'zeit.de']
 
-    c = Crawler()
+    browser = Browser()
 
-    result_list = []
+    # triple mutex: https://stackoverflow.com/a/11673600
+    lock_m = Lock()
+    lock_n = Lock()
+    lock_l = Lock()
+
+    def f_crawl_page(url):
+        global browser, lock_m, lock_n, lock_l
+        return browser.crawl_page(url, lock_m, lock_n, lock_l)
+
+    pool = mp.Pool(8)
+    results = []
+    for url in tranco_top_100:
+        results.append(pool.apply_async(f_crawl_page, args=('https://' + url,)))
+
+    pool.close()
+    pool.join()
+
+    results = [result.get() for result in results]
+
+    for result in results:
+        print(result.url)
+        if result.stopped_waiting:
+            print('-> stopped waiting for ' + result.stopped_waiting_reason)
+        if result.failed:
+            print('-> failed: ' + result.failed_reason)
+            continue
+        if result.skipped:
+            print('-> skipped: ' + result.skipped_reason)
+            continue
+
+    """result_list = []
     for rank, url in enumerate(tranco_top_100):
         print('#' + str(rank) + ': ' + url)
-        result = c.crawl_page('https://' + url)
+        result = browser.crawl_page('https://' + url)
 
         if result.failed:
             print('-> failed: ' + result.failed_reason)
@@ -689,8 +750,4 @@ def main():
 
         result.save_screenshots()
         #subprocess.call(["tesseract", result.screenshot_filename, result.ocr_filename, "--oem", "1", "-l", "eng+deu"])
-        result_list.append(result)
-
-
-if __name__ == '__main__':
-    main()
+        result_list.append(result)"""
