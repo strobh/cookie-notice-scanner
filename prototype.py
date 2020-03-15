@@ -147,7 +147,7 @@ class WebpageCrawler:
                 lock_n.release()
                 self.tab.Page.bringToFront()
                 self.tab.Page.navigate(url=self.webpage.url, _timeout=15)
-                self.tab.wait(1)
+                self.tab.wait(3)
 
             # we wait for our load event to be fired (see `_event_load_event_fired`)
             waited = 0
@@ -506,13 +506,6 @@ class WebpageCrawler:
                         parseValue(style.marginTop) + parseValue(style.marginBottom);
                 }
 
-                function getHorizontalSpacing(elem) {
-                    const style = getComputedStyle(elem);
-                    return parseValue(style.paddingLeft) + parseValue(style.paddingRight) +
-                        parseValue(style.borderLeftWidth) + parseValue(style.borderRightWidth) +
-                        parseValue(style.marginLeft) + parseValue(style.marginRight);
-                }
-
                 function getVerticalSpacing(elem) {
                     const style = getComputedStyle(elem);
                     return parseValue(style.paddingTop) + parseValue(style.paddingBottom) +
@@ -520,16 +513,8 @@ class WebpageCrawler:
                         parseValue(style.marginTop) + parseValue(style.marginBottom);
                 }
 
-                function getWidthDiff(outerElem, innerElem) {
-                    return getWidth(outerElem) - getWidth(innerElem);
-                }
-
                 function getHeightDiff(outerElem, innerElem) {
                     return getHeight(outerElem) - getHeight(innerElem);
-                }
-
-                function isParentWiderThanItsSpacing(outerElem, innerElem) {
-                    return getWidthDiff(outerElem, innerElem) > getHorizontalSpacing(outerElem);
                 }
 
                 function isParentHigherThanItsSpacing(outerElem, innerElem) {
@@ -537,16 +522,37 @@ class WebpageCrawler:
                     return getHeightDiff(outerElem, innerElem) > (getVerticalSpacing(outerElem) + allowedIncrease);
                 }
 
+                function getPosition(elem) {
+                    return elem.getBoundingClientRect().top;
+                }
+
+                function getPositionDiff(outerElem, innerElem) {
+                    return Math.abs(getPosition(outerElem) - getPosition(innerElem));
+                }
+
+                function getPositionSpacing(outerElem, innerElem) {
+                    const outerStyle = getComputedStyle(outerElem);
+                    const innerStyle = getComputedStyle(innerElem);
+                    return parseValue(innerStyle.marginTop) +
+                        parseValue(outerStyle.paddingTop) + parseValue(outerStyle.borderTopWidth)
+                }
+
+                function isParentMovedMoreThanItsSpacing(outerElem, innerElem) {
+                    let allowedIncrease = Math.max(0.25*getHeight(innerElem), 20);
+                    return getPositionDiff(outerElem, innerElem) > (getPositionSpacing(outerElem, innerElem) + allowedIncrease);
+                }
+
                 if (!elem) elem = this;
                 while(elem && elem !== document) {
                     parent = elem.parentNode;
-                    if (isParentHigherThanItsSpacing(parent, elem)) {
+                    if (isParentHigherThanItsSpacing(parent, elem) || isParentMovedMoreThanItsSpacing(parent, elem)) {
                         break;
                     }
                     elem = parent;
                 }
 
-                if (document.body.offsetWidth <= getWidth(elem)) {
+                let allowedIncrease = 18; // for scrollbar issues
+                if (document.documentElement.clientWidth <= (getWidth(elem) + allowedIncrease)) {
                     return elem;
                 } else {
                     return false;
@@ -875,7 +881,7 @@ if __name__ == '__main__':
     #    urls = [line.strip() for line in f]
 
     #tranco_top_100 = ['cnn.com', 'twitch.tv', 'microsoft.com', 'reddit.com', 'zeit.de', 'godaddy.com', 'dropbox.com']
-    #tranco_top_100 = ['microsoft.com', 'facebook.com', 'reddit.com']
+    #tranco_top_100 = ['reddit.com', 'ebay.com', 'twitch.tv']
 
     # triple mutex:
     # https://stackoverflow.com/a/11673600
