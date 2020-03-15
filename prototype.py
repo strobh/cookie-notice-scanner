@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import base64
+import json
 import multiprocessing as mp
 import subprocess
 from functools import partial
@@ -41,6 +42,8 @@ class WebpageResult:
         self.is_cmp_defined = False
         self.cookie_notice_count = {}
         self.cookie_notices = {}
+
+        self._json_excluded_fields = ['_json_excluded_fields', 'screenshots']
 
     def set_failed(self, reason, exception=None):
         self.failed = True
@@ -87,6 +90,31 @@ class WebpageResult:
         self.cookie_notice_count[detection_technique] = len(cookie_notices)
         self.cookie_notices[detection_technique] = cookie_notices
 
+    def save_screenshots(self, directory):
+        for name, screenshot in self.screenshots.items():
+            self._save_screenshot(name, screenshot, directory)
+
+    def _save_screenshot(self, name, screenshot, directory):
+        with open(f'{directory}/{self._get_filename_for_screenshot(name)}', 'wb') as file:
+            file.write(base64.b64decode(screenshot))
+
+    def _get_filename_for_screenshot(self, name):
+        return f'{self.rank}-{self.hostname}-{name}.png'
+
+    def save_data(self, directory):
+        with open(f'{directory}/{self._get_filename_for_data()}', 'w') as file:
+            file.write(self._to_json())
+
+    def _get_filename_for_data(self):
+        return f'{self.rank}-{self.hostname}.json'
+
+    def _to_json(self):
+        results = {k: v for k, v in self.__dict__.items() if k not in self._json_excluded_fields}
+        return json.dumps(results, indent=4, default=lambda o: o.__dict__)
+
+    def exclude_field_from_json(self, excluded_field):
+        self._json_excluded_fields.append(excluded_field)
+
 
 class WebpageCrawler:
     def __init__(self, tab, abp_filter, webpage):
@@ -98,6 +126,8 @@ class WebpageCrawler:
         return self.webpage
 
     def crawl(self):
+        global lock_m, lock_n, lock_l
+
         # initialize `_is_loaded` variable to `False`
         # it will be set to `True` when the `loadEventFired` event occurs
         self._is_loaded = False
@@ -110,8 +140,13 @@ class WebpageCrawler:
             # deny notifications because they might pop-up and block detection
             self._deny_permission('notifications', self.webpage.hostname)
 
-            # open url
-            self.tab.Page.navigate(url=self.webpage.url, _timeout=15)
+            # open url: triple mutex
+            lock_n.acquire()
+            with lock_m:
+                lock_n.release()
+                self.tab.Page.bringToFront()
+                self.tab.Page.navigate(url=self.webpage.url, _timeout=15)
+                self.tab.wait(1)
 
             # we wait for our load event to be fired (see `_event_load_event_fired`)
             waited = 0
@@ -122,7 +157,7 @@ class WebpageCrawler:
             if waited >= 30:
                 self.webpage.set_stopped_waiting('load event')
 
-            # wait  for JavaScript code to be run, after the page has been loaded
+            # wait for JavaScript code to be run, after the page has been loaded
             self.tab.wait(5)
 
             # get root node of document, is needed to be sure that the DOM is loaded
@@ -131,9 +166,9 @@ class WebpageCrawler:
             # detect cookie notices
             self.detect_cookie_notices()
         except pychrome.exceptions.TimeoutException as e:
-            self.webpage.set_failed("timeout", e)
+            self.webpage.set_failed('timeout', e)
         except pychrome.exceptions.CallMethodException as e:
-            self.webpage.set_failed("call_method", e)
+            self.webpage.set_failed('call_method', e)
 
         # stop and close the tab
         self.tab.stop()
@@ -234,6 +269,7 @@ class WebpageCrawler:
 
         # find cookie notice by using AdblockPlus rules
         cookie_notice_rule_node_ids = set(self.find_cookie_notices_by_rules())
+        cookie_notice_rule_node_ids = self._filter_visible_nodes(cookie_notice_rule_node_ids)
         self.webpage.add_cookie_notices('rules', self.get_cookie_notice_data_of_nodes(cookie_notice_rule_node_ids))
 
         # find string `cookie` in nodes and store the closest parent block element
@@ -257,20 +293,15 @@ class WebpageCrawler:
             with lock_m:
                 lock_n.release()
                 self.tab.Page.bringToFront()
+                self.tab.wait(2)
                 self.take_screenshot('original')
                 self.take_screenshots_of_visible_nodes(cookie_notice_rule_node_ids, 'rules')
                 #self.take_screenshots_of_visible_nodes(cookie_node_ids, 'cookie-string')
                 self.take_screenshots_of_visible_nodes(cookie_notice_fixed_node_ids, 'fixed-parent')
                 self.take_screenshots_of_visible_nodes(cookie_notice_full_width_node_ids, 'full-width-parent')
 
-        # save screenshots
-        self.save_screenshots()
-
-        # ocr with tesseract
-        #subprocess.call(["tesseract", result.screenshot_filename, result.ocr_filename, "--oem", "1", "-l", "eng+deu"])
-
         # get cookies and delete them afterwards
-        self.webpage.set_cookies('all', self._get_all_cookies())
+        #self.webpage.set_cookies('all', self._get_all_cookies())
         self._delete_all_cookies()
 
     def get_cookie_notice_data_of_nodes(self, node_ids):
@@ -734,17 +765,6 @@ class WebpageCrawler:
     def _hide_highlight(self):
         self.tab.Overlay.hideHighlight()
 
-    def save_screenshots(self):
-        for name, screenshot in self.webpage.screenshots.items():
-            self._save_screenshot(name, screenshot)
-
-    def _save_screenshot(self, name, screenshot):
-        with open(self._get_filename_for_screenshot(name), "wb") as file:
-            file.write(base64.b64decode(screenshot))
-
-    def _get_filename_for_screenshot(self, name):
-        return "screenshots/" + self.webpage.hostname + "-" + name + ".png"
-
     def _scroll_down(self, delta_y):
         self.tab.Input.emulateTouchFromMouseEvent(type="mouseWheel", x=1, y=1, button="none", deltaX=0, deltaY=-1*delta_y)
         self.tab.wait(0.1)
@@ -753,9 +773,7 @@ class WebpageCrawler:
         return self.tab.Network.getAllCookies().get('cookies')
 
     def _delete_all_cookies(self):
-        while(len(self._get_all_cookies()) != 0):
-            for cookie in self._get_all_cookies():
-                self.tab.Network.deleteCookies(name=cookie.get('name'), domain=cookie.get('domain'), path=cookie.get('path'))
+        self.tab.Network.clearBrowserCookies()
 
     def _get_root_frame_id(self):
         return self.tab.Page.getFrameTree().get('frameTree').get('frame').get('id')
@@ -858,6 +876,7 @@ if __name__ == '__main__':
 
     #tranco_top_100 = ['cnn.com', 'twitch.tv', 'microsoft.com', 'reddit.com', 'zeit.de', 'godaddy.com', 'dropbox.com']
     #tranco_top_100 = ['microsoft.com', 'facebook.com', 'reddit.com']
+    #tranco_top_100 = ['youtube.com']
 
     # triple mutex:
     # https://stackoverflow.com/a/11673600
@@ -873,18 +892,24 @@ if __name__ == '__main__':
     browser = Browser(abp_filter_filename='resources/cookie-notice-css-rules.txt')
     f_crawl_page = partial(Browser.crawl_page, browser)
 
-    results = []
     def f_page_crawled(result):
-        global results
-        results.append(result)
+        # cookies are not correct if pages are crawled in parallel
+        result.exclude_field_from_json('cookies')
+
+        # save results and screenshots
+        result.save_data('results')
+        result.save_screenshots('results')
+
+        # ocr with tesseract
+        #subprocess.call(["tesseract", result.screenshot_filename, result.ocr_filename, "--oem", "1", "-l", "eng+deu"])
 
         print('#' + str(result.rank) + ': ' + result.url)
-        if result.stopped_waiting:
-            print('-> stopped waiting for ' + result.stopped_waiting_reason)
         if result.failed:
             print('-> failed: ' + result.failed_reason)
         if result.skipped:
             print('-> skipped: ' + result.skipped_reason)
+        if result.stopped_waiting:
+            print('-> stopped waiting for ' + result.stopped_waiting_reason)
 
     # crawl the pages in parallel
     for rank, url in enumerate(tranco_top_100, start=1):
