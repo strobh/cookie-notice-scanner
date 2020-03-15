@@ -36,8 +36,11 @@ class WebpageResult:
         self.cookies = {}
         self.screenshots = {}
 
+        self.html = None
         self.language = None
         self.is_cmp_defined = False
+        self.cookie_notice_count = {}
+        self.cookie_notice_html = {}
 
     def set_failed(self, reason, exception=None):
         self.failed = True
@@ -71,11 +74,18 @@ class WebpageResult:
     def add_screenshot(self, name, screenshot):
         self.screenshots[name] = screenshot
 
+    def set_html(self, html):
+        self.html = html
+
     def set_language(self, language):
         self.language = language
 
     def set_cmp_defined(self, is_cmp_defined):
         self.is_cmp_defined = is_cmp_defined
+
+    def add_cookie_notices(self, detection_technique, cookie_notices):
+        self.cookie_notice_count[detection_technique] = len(cookie_notices)
+        self.cookie_notice_html[detection_technique] = cookie_notices
 
 
 class WebpageCrawler:
@@ -116,7 +126,7 @@ class WebpageCrawler:
             self.tab.wait(5)
 
             # get root node of document, is needed to be sure that the DOM is loaded
-            self.tab.DOM.getDocument()
+            self.root_node = self.tab.DOM.getDocument().get('root')
 
             # detect cookie notices
             self.detect_cookie_notices()
@@ -207,6 +217,10 @@ class WebpageCrawler:
     def detect_cookie_notices(self):
         global lock_m, lock_n, lock_l
 
+        # store html of page
+        self.webpage.set_html(self.get_html(self.root_node.get('nodeId')))
+
+        # check whether language is english or german
         lang = self.detect_language()
         self.webpage.set_language(lang)
         if lang != 'en' and lang != 'de':
@@ -220,6 +234,7 @@ class WebpageCrawler:
 
         # find cookie notice by using AdblockPlus rules
         cookie_notice_rule_node_ids = set(self.find_cookie_notices_by_rules())
+        self.webpage.add_cookie_notices('rules', self.get_html_of_nodes(cookie_notice_rule_node_ids))
 
         # find string `cookie` in nodes and store the closest parent block element
         cookie_node_ids = self.search_for_string('cookie')
@@ -229,10 +244,12 @@ class WebpageCrawler:
         # find fixed parent nodes (i.e. having style `position: fixed`) with string `cookie`
         cookie_notice_fixed_node_ids = self.find_cookie_notices_by_fixed_parent(cookie_node_ids)
         cookie_notice_fixed_node_ids = self._filter_visible_nodes(cookie_notice_fixed_node_ids)
+        self.webpage.add_cookie_notices('fixed-parent', self.get_html_of_nodes(cookie_notice_fixed_node_ids))
 
         # find full-width parent nodes with string `cookie`
         cookie_notice_full_width_node_ids = self.find_cookie_notices_by_full_width_parent(cookie_node_ids)
         cookie_notice_full_width_node_ids = self._filter_visible_nodes(cookie_notice_full_width_node_ids)
+        self.webpage.add_cookie_notices('full-width-parent', self.get_html_of_nodes(cookie_notice_full_width_node_ids))
 
         # triple mutex
         with lock_l:
@@ -255,6 +272,12 @@ class WebpageCrawler:
         # get cookies and delete them afterwards
         self.webpage.set_cookies('all', self._get_all_cookies())
         self._delete_all_cookies()
+
+    def get_html(self, node_id):
+        return self.tab.DOM.getOuterHTML(nodeId=node_id).get('outerHTML')
+
+    def get_html_of_nodes(self, node_ids):
+        return [self.get_html(node_id) for node_id in node_ids]
 
     def detect_language(self):
         result = self.tab.Runtime.evaluate(expression='document.body.innerText').get('result')
@@ -736,6 +759,7 @@ if __name__ == '__main__':
     #    urls = [line.strip() for line in f]
 
     #tranco_top_100 = ['cnn.com', 'twitch.tv', 'microsoft.com', 'reddit.com', 'zeit.de', 'godaddy.com', 'dropbox.com']
+    #tranco_top_100 = ['microsoft.com', 'facebook.com']
 
     # triple mutex:
     # https://stackoverflow.com/a/11673600
@@ -770,6 +794,3 @@ if __name__ == '__main__':
         pool.apply_async(f_crawl_page, args=(webpage,), callback=f_page_crawled)
     pool.close()
     pool.join()
-
-    # get results
-    #results = [result.get() for result in results]
