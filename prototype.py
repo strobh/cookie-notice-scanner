@@ -483,12 +483,11 @@ class WebpageCrawler:
         js_function = """
             function findFullWidthParent(elem) {
                 function parseValue(value) {
-                    parsedValue = parseInt(value);
-                    if (isNaN(parseValue)) {
+                    var parsedValue = parseInt(value);
+                    if (isNaN(parsedValue)) {
                         return 0;
-                    }
-                    else {
-                        return parseValue;
+                    } else {
+                        return parsedValue;
                     }
                 }
 
@@ -876,7 +875,6 @@ if __name__ == '__main__':
 
     #tranco_top_100 = ['cnn.com', 'twitch.tv', 'microsoft.com', 'reddit.com', 'zeit.de', 'godaddy.com', 'dropbox.com']
     #tranco_top_100 = ['microsoft.com', 'facebook.com', 'reddit.com']
-    #tranco_top_100 = ['youtube.com']
 
     # triple mutex:
     # https://stackoverflow.com/a/11673600
