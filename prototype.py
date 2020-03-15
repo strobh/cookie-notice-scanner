@@ -19,10 +19,7 @@ class WebpageResult:
     def __init__(self, rank=None, url=''):
         self.rank = rank
         self.url = url
-        
-        parsed_url = urlparse(self.url)
-        self.hostname = parsed_url.hostname
-        self.id = self.hostname
+        self.hostname = urlparse(self.url).hostname
 
         self.failed = False
         self.failed_reason = None
@@ -36,10 +33,11 @@ class WebpageResult:
 
         self.requests = []
         self.responses = []
-        self.cookies = []
-
+        self.cookies = {}
         self.screenshots = {}
-        self.ocr_filename = "ocr/" + self.id
+
+        self.language = None
+        self.is_cmp_defined = False
 
     def set_failed(self, reason, exception=None):
         self.failed = True
@@ -67,14 +65,17 @@ class WebpageResult:
             'headers': headers,
         })
 
-    def set_cookies(self, cookies):
-        self.cookies = cookies
+    def set_cookies(self, key, cookies):
+        self.cookies[key] = cookies
 
     def add_screenshot(self, name, screenshot):
         self.screenshots[name] = screenshot
 
-    def get_screenshots(self):
-        return self.screenshots
+    def set_language(self, language):
+        self.language = language
+
+    def set_cmp_defined(self, is_cmp_defined):
+        self.is_cmp_defined = is_cmp_defined
 
 
 class WebpageCrawler:
@@ -112,7 +113,7 @@ class WebpageCrawler:
                 self.webpage.set_stopped_waiting('load event')
 
             # wait  for JavaScript code to be run, after the page has been loaded
-            self.tab.wait(3)
+            self.tab.wait(5)
 
             # get root node of document, is needed to be sure that the DOM is loaded
             self.tab.DOM.getDocument()
@@ -207,6 +208,7 @@ class WebpageCrawler:
         global lock_m, lock_n, lock_l
 
         lang = self.detect_language()
+        self.webpage.set_language(lang)
         if lang != 'en' and lang != 'de':
             self.webpage.set_skipped('unimplemented language `' + lang + '`')
             return
@@ -214,28 +216,23 @@ class WebpageCrawler:
         # check whether the consent management platform is used
         # -> there should be a cookie notice
         is_cmp_defined = self.is_cmp_function_defined()
+        self.webpage.set_cmp_defined(is_cmp_defined)
 
         # find cookie notice by using AdblockPlus rules
-        cookie_notice_rule_node_ids = set(self.find_cookie_notice_by_rules())
+        cookie_notice_rule_node_ids = set(self.find_cookie_notices_by_rules())
 
         # find string `cookie` in nodes and store the closest parent block element
         cookie_node_ids = self.search_for_string('cookie')
-        cookie_node_ids = [node_id for node_id in cookie_node_ids if self.is_node_visible(node_id)]
+        cookie_node_ids = self._filter_visible_nodes(cookie_node_ids)
         cookie_node_ids = set([self.find_parent_block_element(node_id) for node_id in cookie_node_ids])
 
         # find fixed parent nodes (i.e. having style `position: fixed`) with string `cookie`
-        cookie_notice_fixed_node_ids = set()
-        for node_id in cookie_node_ids:
-            fp_result = self.find_fixed_parent(node_id)
-            if fp_result.get('has_fixed_parent'):
-                cookie_notice_fixed_node_ids.add(fp_result.get('fixed_parent'))
+        cookie_notice_fixed_node_ids = self.find_cookie_notices_by_fixed_parent(cookie_node_ids)
+        cookie_notice_fixed_node_ids = self._filter_visible_nodes(cookie_notice_fixed_node_ids)
 
         # find full-width parent nodes with string `cookie`
-        cookie_notice_full_width_node_ids = set()
-        for node_id in cookie_node_ids:
-            fwp_result = self.find_full_width_parent(node_id)
-            if fwp_result.get('parent_node_exists'):
-                cookie_notice_full_width_node_ids.add(fwp_result.get('parent_node'))
+        cookie_notice_full_width_node_ids = self.find_cookie_notices_by_full_width_parent(cookie_node_ids)
+        cookie_notice_full_width_node_ids = self._filter_visible_nodes(cookie_notice_full_width_node_ids)
 
         # triple mutex
         with lock_l:
@@ -256,7 +253,7 @@ class WebpageCrawler:
         #subprocess.call(["tesseract", result.screenshot_filename, result.ocr_filename, "--oem", "1", "-l", "eng+deu"])
 
         # get cookies and delete them afterwards
-        self.webpage.set_cookies(self._get_all_cookies())
+        self.webpage.set_cookies('all', self._get_all_cookies())
         self._delete_all_cookies()
 
     def detect_language(self):
@@ -321,6 +318,14 @@ class WebpageCrawler:
         remote_object_id = self._get_remote_object_id_for_node_id(node_id)
         result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
         return self._get_node_id_for_remote_object_id(result.get('objectId'))
+
+    def find_cookie_notices_by_full_width_parent(self, cookie_node_ids):
+        cookie_notice_full_width_node_ids = set()
+        for node_id in cookie_node_ids:
+            fwp_result = self.find_full_width_parent(node_id)
+            if fwp_result.get('parent_node_exists'):
+                cookie_notice_full_width_node_ids.add(fwp_result.get('parent_node'))
+        return cookie_notice_full_width_node_ids
 
     def find_full_width_parent(self, node_id):
         js_function = """
@@ -412,6 +417,14 @@ class WebpageCrawler:
                 'parent_node': self._get_node_id_for_remote_object_id(result.get('objectId')),
             }
 
+    def find_cookie_notices_by_fixed_parent(self, cookie_node_ids):
+        cookie_notice_fixed_node_ids = set()
+        for node_id in cookie_node_ids:
+            fp_result = self.find_fixed_parent(node_id)
+            if fp_result.get('has_fixed_parent'):
+                cookie_notice_fixed_node_ids.add(fp_result.get('fixed_parent'))
+        return cookie_notice_fixed_node_ids
+
     def find_fixed_parent(self, node_id):
         js_function = """
             function findFixedParent(elem) {
@@ -457,7 +470,7 @@ class WebpageCrawler:
                 'fixed_parent': result_node_id,
             }
 
-    def find_cookie_notice_by_rules(self):
+    def find_cookie_notices_by_rules(self):
         """Returns the node ids of the found cookie notices.
 
         The function uses the AdblockPlus ruleset of the browser plugin
@@ -601,7 +614,7 @@ class WebpageCrawler:
         self.tab.Overlay.hideHighlight()
 
     def save_screenshots(self):
-        for name, screenshot in self.webpage.get_screenshots().items():
+        for name, screenshot in self.webpage.screenshots.items():
             self._save_screenshot(name, screenshot)
 
     def _save_screenshot(self, name, screenshot):
@@ -609,7 +622,7 @@ class WebpageCrawler:
             file.write(base64.b64decode(screenshot))
 
     def _get_filename_for_screenshot(self, name):
-        return "screenshots/" + self.webpage.id + "-" + name + ".png"
+        return "screenshots/" + self.webpage.hostname + "-" + name + ".png"
 
     def _scroll_down(self, delta_y):
         self.tab.Input.emulateTouchFromMouseEvent(type="mouseWheel", x=1, y=1, button="none", deltaX=0, deltaY=-1*delta_y)
@@ -631,6 +644,9 @@ class WebpageCrawler:
 
     def _get_remote_object_id_for_node_id(self, node_id):
         return self.tab.DOM.resolveNode(nodeId=node_id).get('object').get('objectId')
+
+    def _filter_visible_nodes(self, node_ids):
+        return [node_id for node_id in node_ids if self.is_node_visible(node_id).get('is_visible')]
 
     def _get_node_name(self, node_id):
         return self.tab.DOM.describeNode(nodeId=node_id).get('node').get('nodeName').lower()
@@ -713,13 +729,13 @@ class AdBlockPlusFilter:
 if __name__ == '__main__':
     tranco = Tranco(cache=True, cache_dir='tranco')
     tranco_list = tranco.list(date='2020-03-01')
-    tranco_top_100 = tranco_list.top(100)
+    tranco_top_100 = tranco_list.top(20)
 
     #urls = []
     #with open('resources/urls.txt') as f:
     #    urls = [line.strip() for line in f]
 
-    #tranco_top_100 = ['cnn.com'] # 'facebook.com', 'twitter.com', 'twitch.tv', 'microsoft.com', 'reddit.com', 'zeit.de', 'godaddy.com', 'dropbox.com',
+    #tranco_top_100 = ['cnn.com', 'twitch.tv', 'microsoft.com', 'reddit.com', 'zeit.de', 'godaddy.com', 'dropbox.com']
 
     # triple mutex:
     # https://stackoverflow.com/a/11673600
@@ -728,24 +744,18 @@ if __name__ == '__main__':
     lock_n = Lock()
     lock_l = Lock()
 
-    # create multiprocessor pool: eight tabs are processed in parallel at most
-    pool = mp.Pool(8)
+    # create multiprocessor pool: ten tabs are processed in parallel at most
+    pool = mp.Pool(10)
 
     # create the browser and a helper function to crawl pages
     browser = Browser()
     f_crawl_page = partial(Browser.crawl_page, browser)
 
-    # crawl the pages in parallel
     results = []
-    for rank, url in enumerate(tranco_top_100):
-        webpage = WebpageResult(rank=rank, url='https://' + url)
-        results.append(pool.apply_async(f_crawl_page, args=(webpage,)))
-    pool.close()
-    pool.join()
+    def page_crawled(result):
+        global results
+        results.append(result)
 
-    # get results
-    results = [result.get() for result in results]
-    for result in results:
         print('#' + str(result.rank) + ': ' + result.url)
         if result.stopped_waiting:
             print('-> stopped waiting for ' + result.stopped_waiting_reason)
@@ -753,3 +763,13 @@ if __name__ == '__main__':
             print('-> failed: ' + result.failed_reason)
         if result.skipped:
             print('-> skipped: ' + result.skipped_reason)
+
+    # crawl the pages in parallel
+    for rank, url in enumerate(tranco_top_100, start=1):
+        webpage = WebpageResult(rank=rank, url='https://' + url)
+        pool.apply_async(f_crawl_page, args=(webpage,), callback=page_crawled)
+    pool.close()
+    pool.join()
+
+    # get results
+    #results = [result.get() for result in results]
