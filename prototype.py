@@ -3,6 +3,7 @@
 import base64
 import json
 import multiprocessing as mp
+import os
 import subprocess
 from functools import partial
 from multiprocessing import Lock
@@ -867,7 +868,7 @@ class AdblockPlusFilter:
 if __name__ == '__main__':
     tranco = Tranco(cache=True, cache_dir='tranco')
     tranco_list = tranco.list(date='2020-03-01')
-    tranco_top_100 = tranco_list.top(20)
+    tranco_top_100 = tranco_list.top(100)
 
     #urls = []
     #with open('resources/urls.txt') as f:
@@ -890,13 +891,18 @@ if __name__ == '__main__':
     browser = Browser(abp_filter_filename='resources/cookie-notice-css-rules.txt')
     f_crawl_page = partial(Browser.crawl_page, browser)
 
+    # create results directory if necessary
+    RESULTS_DIRECTORY = 'results'
+    os.makedirs(RESULTS_DIRECTORY, exist_ok=True)
+
+    # this is a callback function that is called when crawling a page finished
     def f_page_crawled(result):
         # cookies are not correct if pages are crawled in parallel
         result.exclude_field_from_json('cookies')
 
         # save results and screenshots
-        result.save_data('results')
-        result.save_screenshots('results')
+        result.save_data(RESULTS_DIRECTORY)
+        result.save_screenshots(RESULTS_DIRECTORY)
 
         # ocr with tesseract
         #subprocess.call(["tesseract", result.screenshot_filename, result.ocr_filename, "--oem", "1", "-l", "eng+deu"])
@@ -913,5 +919,7 @@ if __name__ == '__main__':
     for rank, url in enumerate(tranco_top_100, start=1):
         webpage = WebpageResult(rank=rank, url='https://' + url)
         pool.apply_async(f_crawl_page, args=(webpage,), callback=f_page_crawled)
+
+    # close pool
     pool.close()
     pool.join()
