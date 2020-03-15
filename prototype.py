@@ -278,6 +278,8 @@ class WebpageCrawler:
                 'html': self.get_html(node_id),
                 'width': self.get_width(node_id),
                 'height': self.get_height(node_id),
+                'x': self.get_x(node_id),
+                'y': self.get_y(node_id),
             } for node_id in node_ids]
 
     def get_html(self, node_id):
@@ -312,8 +314,8 @@ class WebpageCrawler:
                 }
             }"""
 
-        node_id = self.is_node_visible(node_id).get('visible_node')
-        remote_object_id = self._get_remote_object_id_for_node_id(node_id)
+        visible_node_id = self.is_node_visible(node_id).get('visible_node')
+        remote_object_id = self._get_remote_object_id_for_node_id(visible_node_id)
         result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
         return result.get('value')
 
@@ -346,8 +348,32 @@ class WebpageCrawler:
                 }
             }"""
 
-        node_id = self.is_node_visible(node_id).get('visible_node')
-        remote_object_id = self._get_remote_object_id_for_node_id(node_id)
+        visible_node_id = self.is_node_visible(node_id).get('visible_node')
+        remote_object_id = self._get_remote_object_id_for_node_id(visible_node_id)
+        result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
+        return result.get('value')
+
+    def get_x(self, node_id):
+        js_function = """
+            function getX(elem) {
+                if (!elem) elem = this;
+                return elem.getBoundingClientRect().top;
+            }"""
+
+        visible_node_id = self.is_node_visible(node_id).get('visible_node')
+        remote_object_id = self._get_remote_object_id_for_node_id(visible_node_id)
+        result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
+        return result.get('value')
+
+    def get_y(self, node_id):
+        js_function = """
+            function getY(elem) {
+                if (!elem) elem = this;
+                return elem.getBoundingClientRect().left;
+            }"""
+
+        visible_node_id = self.is_node_visible(node_id).get('visible_node')
+        remote_object_id = self._get_remote_object_id_for_node_id(visible_node_id)
         result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
         return result.get('value')
 
