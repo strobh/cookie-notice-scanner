@@ -40,7 +40,7 @@ class WebpageResult:
         self.language = None
         self.is_cmp_defined = False
         self.cookie_notice_count = {}
-        self.cookie_notice_html = {}
+        self.cookie_notices = {}
 
     def set_failed(self, reason, exception=None):
         self.failed = True
@@ -85,7 +85,7 @@ class WebpageResult:
 
     def add_cookie_notices(self, detection_technique, cookie_notices):
         self.cookie_notice_count[detection_technique] = len(cookie_notices)
-        self.cookie_notice_html[detection_technique] = cookie_notices
+        self.cookie_notices[detection_technique] = cookie_notices
 
 
 class WebpageCrawler:
@@ -234,7 +234,7 @@ class WebpageCrawler:
 
         # find cookie notice by using AdblockPlus rules
         cookie_notice_rule_node_ids = set(self.find_cookie_notices_by_rules())
-        self.webpage.add_cookie_notices('rules', self.get_html_of_nodes(cookie_notice_rule_node_ids))
+        self.webpage.add_cookie_notices('rules', self.get_cookie_notice_data_of_nodes(cookie_notice_rule_node_ids))
 
         # find string `cookie` in nodes and store the closest parent block element
         cookie_node_ids = self.search_for_string('cookie')
@@ -244,12 +244,12 @@ class WebpageCrawler:
         # find fixed parent nodes (i.e. having style `position: fixed`) with string `cookie`
         cookie_notice_fixed_node_ids = self.find_cookie_notices_by_fixed_parent(cookie_node_ids)
         cookie_notice_fixed_node_ids = self._filter_visible_nodes(cookie_notice_fixed_node_ids)
-        self.webpage.add_cookie_notices('fixed-parent', self.get_html_of_nodes(cookie_notice_fixed_node_ids))
+        self.webpage.add_cookie_notices('fixed-parent', self.get_cookie_notice_data_of_nodes(cookie_notice_fixed_node_ids))
 
         # find full-width parent nodes with string `cookie`
         cookie_notice_full_width_node_ids = self.find_cookie_notices_by_full_width_parent(cookie_node_ids)
         cookie_notice_full_width_node_ids = self._filter_visible_nodes(cookie_notice_full_width_node_ids)
-        self.webpage.add_cookie_notices('full-width-parent', self.get_html_of_nodes(cookie_notice_full_width_node_ids))
+        self.webpage.add_cookie_notices('full-width-parent', self.get_cookie_notice_data_of_nodes(cookie_notice_full_width_node_ids))
 
         # triple mutex
         with lock_l:
@@ -273,11 +273,83 @@ class WebpageCrawler:
         self.webpage.set_cookies('all', self._get_all_cookies())
         self._delete_all_cookies()
 
+    def get_cookie_notice_data_of_nodes(self, node_ids):
+        return [{
+                'html': self.get_html(node_id),
+                'width': self.get_width(node_id),
+                'height': self.get_height(node_id),
+            } for node_id in node_ids]
+
     def get_html(self, node_id):
         return self.tab.DOM.getOuterHTML(nodeId=node_id).get('outerHTML')
 
-    def get_html_of_nodes(self, node_ids):
-        return [self.get_html(node_id) for node_id in node_ids]
+    def get_width(self, node_id):
+        """Returns the width of the visible (child) node
+        or `full` if it takes the full width of the window.
+        """
+
+        js_function = """
+            function getWidth(elem) {
+                function parseValue(value) {
+                    parsedValue = parseInt(value);
+                    if (isNaN(parseValue)) {
+                        return 0;
+                    }
+                    else {
+                        return parseValue;
+                    }
+                }
+
+                if (!elem) elem = this;
+                const style = getComputedStyle(elem);
+                width = elem.clientWidth + parseValue(style.borderLeftWidth) + parseValue(style.borderRightWidth);
+
+                if (width === document.documentElement.clientWidth) {
+                    return 'full';
+                }
+                else {
+                    return width;
+                }
+            }"""
+
+        node_id = self.is_node_visible(node_id).get('visible_node')
+        remote_object_id = self._get_remote_object_id_for_node_id(node_id)
+        result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
+        return result.get('value')
+
+    def get_height(self, node_id):
+        """Returns the height of the visible (child) node
+        or `full` if it takes the full height of the window.
+        """
+
+        js_function = """
+            function getHeight(elem) {
+                function parseValue(value) {
+                    parsedValue = parseInt(value);
+                    if (isNaN(parseValue)) {
+                        return 0;
+                    }
+                    else {
+                        return parseValue;
+                    }
+                }
+
+                if (!elem) elem = this;
+                const style = getComputedStyle(elem);
+                height = elem.clientHeight + parseValue(style.borderTopWidth) + parseValue(style.borderBottomWidth);
+
+                if (height === document.documentElement.clientHeight) {
+                    return 'full';
+                }
+                else {
+                    return height;
+                }
+            }"""
+
+        node_id = self.is_node_visible(node_id).get('visible_node')
+        remote_object_id = self._get_remote_object_id_for_node_id(node_id)
+        result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
+        return result.get('value')
 
     def detect_language(self):
         result = self.tab.Runtime.evaluate(expression='document.body.innerText').get('result')
@@ -353,42 +425,42 @@ class WebpageCrawler:
     def find_full_width_parent(self, node_id):
         js_function = """
             function findFullWidthParent(elem) {
+                function parseValue(value) {
+                    parsedValue = parseInt(value);
+                    if (isNaN(parseValue)) {
+                        return 0;
+                    }
+                    else {
+                        return parseValue;
+                    }
+                }
+
                 function getWidth(elem) {
                     const style = getComputedStyle(elem);
-                    if (style.boxSizing == 'content-box') {
-                        return parseInt(style.width) +
-                            parseInt(style.paddingLeft) + parseInt(style.paddingRight) +
-                            parseInt(style.borderLeftWidth) + parseInt(style.borderRightWidth) +
-                            parseInt(style.marginLeft) + parseInt(style.marginRight);
-                    } else {
-                        return parseInt(style.width) + parseInt(style.marginLeft) + parseInt(style.marginRight);
-                    }
+                    return elem.clientWidth +
+                        parseValue(style.borderLeftWidth) + parseValue(style.borderRightWidth) +
+                        parseValue(style.marginLeft) + parseValue(style.marginRight);
                 }
 
                 function getHeight(elem) {
                     const style = getComputedStyle(elem);
-                    if (style.boxSizing == 'content-box') {
-                        return parseInt(style.height) +
-                            parseInt(style.paddingTop) + parseInt(style.paddingBottom) +
-                            parseInt(style.borderTopWidth) + parseInt(style.borderBottomWidth) +
-                            parseInt(style.marginTop) + parseInt(style.marginBottom);
-                    } else {
-                        return parseInt(style.height) + parseInt(style.marginTop) + parseInt(style.marginBottom);
-                    }
+                    return elem.clientHeight +
+                        parseValue(style.borderTopWidth) + parseValue(style.borderBottomWidth) +
+                        parseValue(style.marginTop) + parseValue(style.marginBottom);
                 }
 
                 function getHorizontalSpacing(elem) {
                     const style = getComputedStyle(elem);
-                    return parseInt(style.paddingLeft) + parseInt(style.paddingRight) +
-                        parseInt(style.borderLeftWidth) + parseInt(style.borderRightWidth) +
-                        parseInt(style.marginLeft) + parseInt(style.marginRight);
+                    return parseValue(style.paddingLeft) + parseValue(style.paddingRight) +
+                        parseValue(style.borderLeftWidth) + parseValue(style.borderRightWidth) +
+                        parseValue(style.marginLeft) + parseValue(style.marginRight);
                 }
 
                 function getVerticalSpacing(elem) {
                     const style = getComputedStyle(elem);
-                    return parseInt(style.paddingTop) + parseInt(style.paddingBottom) +
-                        parseInt(style.borderTopWidth) + parseInt(style.borderBottomWidth) +
-                        parseInt(style.marginTop) + parseInt(style.marginBottom);
+                    return parseValue(style.paddingTop) + parseValue(style.paddingBottom) +
+                        parseValue(style.borderTopWidth) + parseValue(style.borderBottomWidth) +
+                        parseValue(style.marginTop) + parseValue(style.marginBottom);
                 }
 
                 function getWidthDiff(outerElem, innerElem) {
@@ -417,7 +489,7 @@ class WebpageCrawler:
                     elem = parent;
                 }
 
-                if (parseInt(getComputedStyle(document.body).width) <= getWidth(elem)) {
+                if (document.body.offsetWidth <= getWidth(elem)) {
                     return elem;
                 } else {
                     return false;
@@ -759,7 +831,7 @@ if __name__ == '__main__':
     #    urls = [line.strip() for line in f]
 
     #tranco_top_100 = ['cnn.com', 'twitch.tv', 'microsoft.com', 'reddit.com', 'zeit.de', 'godaddy.com', 'dropbox.com']
-    #tranco_top_100 = ['microsoft.com', 'facebook.com']
+    #tranco_top_100 = ['microsoft.com', 'facebook.com', 'reddit.com']
 
     # triple mutex:
     # https://stackoverflow.com/a/11673600
