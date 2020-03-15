@@ -669,12 +669,12 @@ class WebpageCrawler:
 
 
 class Browser:
-    def __init__(self, debugger_url='http://127.0.0.1:9222'):
+    def __init__(self, abp_filter_filename, debugger_url='http://127.0.0.1:9222'):
         # create a browser instance which controls chromium
         self.browser = pychrome.Browser(url=debugger_url)
 
         # create helpers
-        self.abp_filter = AdBlockPlusFilter('resources/cookie-notice-css-rules.txt')
+        self.abp_filter = AdblockPlusFilter(abp_filter_filename)
 
     def crawl_page(self, webpage):
         global lock_m, lock_n, lock_l
@@ -692,7 +692,7 @@ class Browser:
         return page_crawler.get_result()
 
 
-class AdBlockPlusFilter:
+class AdblockPlusFilter:
     def __init__(self, rules_filename):
         with open(rules_filename) as filterlist:
             # we only need filters with type css
@@ -748,11 +748,11 @@ if __name__ == '__main__':
     pool = mp.Pool(10)
 
     # create the browser and a helper function to crawl pages
-    browser = Browser()
+    browser = Browser(abp_filter_filename='resources/cookie-notice-css-rules.txt')
     f_crawl_page = partial(Browser.crawl_page, browser)
 
     results = []
-    def page_crawled(result):
+    def f_page_crawled(result):
         global results
         results.append(result)
 
@@ -767,7 +767,7 @@ if __name__ == '__main__':
     # crawl the pages in parallel
     for rank, url in enumerate(tranco_top_100, start=1):
         webpage = WebpageResult(rank=rank, url='https://' + url)
-        pool.apply_async(f_crawl_page, args=(webpage,), callback=page_crawled)
+        pool.apply_async(f_crawl_page, args=(webpage,), callback=f_page_crawled)
     pool.close()
     pool.join()
 
