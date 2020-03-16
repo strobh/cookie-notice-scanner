@@ -147,7 +147,7 @@ class WebpageCrawler:
                 lock_n.release()
                 self.tab.Page.bringToFront()
                 self.tab.Page.navigate(url=self.webpage.url, _timeout=15)
-                self.tab.wait(3)
+                self.tab.wait(1)
 
             # we wait for our load event to be fired (see `_event_load_event_fired`)
             waited = 0
@@ -161,15 +161,20 @@ class WebpageCrawler:
             # wait for JavaScript code to be run, after the page has been loaded
             self.tab.wait(5)
 
+            # bring to front: triple mutex
+            lock_n.acquire()
+            with lock_m:
+                lock_n.release()
+                self.tab.Page.bringToFront()
+                self.tab.wait(3)
+
             # get root node of document, is needed to be sure that the DOM is loaded
             self.root_node = self.tab.DOM.getDocument().get('root')
 
             # detect cookie notices
             self.detect_cookie_notices()
-        except pychrome.exceptions.TimeoutException as e:
-            self.webpage.set_failed('timeout', e)
-        except pychrome.exceptions.CallMethodException as e:
-            self.webpage.set_failed('call_method', e)
+        except Exception as e:
+            self.webpage.set_failed(type(e).__name__, str(e))
 
         # stop and close the tab
         self.tab.stop()
@@ -275,8 +280,8 @@ class WebpageCrawler:
 
         # find string `cookie` in nodes and store the closest parent block element
         cookie_node_ids = self.search_for_string('cookie')
-        cookie_node_ids = self._filter_visible_nodes(cookie_node_ids)
         cookie_node_ids = set([self.find_parent_block_element(node_id) for node_id in cookie_node_ids])
+        cookie_node_ids = self._filter_visible_nodes(cookie_node_ids)
 
         # find fixed parent nodes (i.e. having style `position: fixed`) with string `cookie`
         cookie_notice_fixed_node_ids = self.find_cookie_notices_by_fixed_parent(cookie_node_ids)
@@ -294,7 +299,7 @@ class WebpageCrawler:
             with lock_m:
                 lock_n.release()
                 self.tab.Page.bringToFront()
-                self.tab.wait(2)
+                self.tab.wait(1)
                 self.take_screenshot('original')
                 self.take_screenshots_of_visible_nodes(cookie_notice_rule_node_ids, 'rules')
                 #self.take_screenshots_of_visible_nodes(cookie_node_ids, 'cookie-string')
@@ -874,14 +879,14 @@ class AdblockPlusFilter:
 if __name__ == '__main__':
     tranco = Tranco(cache=True, cache_dir='tranco')
     tranco_list = tranco.list(date='2020-03-01')
-    tranco_top_100 = tranco_list.top(100)
+    tranco_top_100 = tranco_list.top(2000)
 
     #urls = []
     #with open('resources/urls.txt') as f:
     #    urls = [line.strip() for line in f]
 
     #tranco_top_100 = ['cnn.com', 'twitch.tv', 'microsoft.com', 'reddit.com', 'zeit.de', 'godaddy.com', 'dropbox.com']
-    #tranco_top_100 = ['reddit.com', 'ebay.com', 'twitch.tv']
+    #tranco_top_100 = ['discovery.com']
 
     # triple mutex:
     # https://stackoverflow.com/a/11673600
