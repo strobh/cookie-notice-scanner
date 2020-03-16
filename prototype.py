@@ -5,6 +5,7 @@ import json
 import multiprocessing as mp
 import os
 import subprocess
+import traceback
 from functools import partial
 from multiprocessing import Lock
 from urllib.parse import urlparse
@@ -26,6 +27,7 @@ class WebpageResult:
         self.failed = False
         self.failed_reason = None
         self.failed_exception = None
+        self.failed_traceback = None
 
         self.skipped = False
         self.skipped_reason = None
@@ -46,10 +48,11 @@ class WebpageResult:
 
         self._json_excluded_fields = ['_json_excluded_fields', 'screenshots']
 
-    def set_failed(self, reason, exception=None):
+    def set_failed(self, reason, exception=None, traceback=None):
         self.failed = True
         self.failed_reason = reason
         self.failed_exception = exception
+        self.failed_traceback = traceback
 
     def set_skipped(self, reason):
         self.skipped = True
@@ -174,7 +177,7 @@ class WebpageCrawler:
             # detect cookie notices
             self.detect_cookie_notices()
         except Exception as e:
-            self.webpage.set_failed(type(e).__name__, str(e))
+            self.webpage.set_failed(type(e).__name__, str(e), traceback.format_exc())
 
         # stop and close the tab
         self.tab.stop()
@@ -466,7 +469,7 @@ class WebpageCrawler:
                 }
 
                 if (!elem) elem = this;
-                while(elem && elem !== document && isInlineElement(elem)) {
+                while(elem && elem !== document.body && isInlineElement(elem)) {
                     elem = elem.parentNode;
                 }
                 return elem;
@@ -548,7 +551,7 @@ class WebpageCrawler:
                 }
 
                 if (!elem) elem = this;
-                while(elem && elem !== document) {
+                while(elem && elem !== document.body) {
                     parent = elem.parentNode;
                     if (isParentHigherThanItsSpacing(parent, elem) || isParentMovedMoreThanItsSpacing(parent, elem)) {
                         break;
@@ -886,7 +889,7 @@ if __name__ == '__main__':
     #    urls = [line.strip() for line in f]
 
     #tranco_top_100 = ['cnn.com', 'twitch.tv', 'microsoft.com', 'reddit.com', 'zeit.de', 'godaddy.com', 'dropbox.com']
-    #tranco_top_100 = ['discovery.com']
+    #tranco_top_100 = ['yelp.com']
 
     # triple mutex:
     # https://stackoverflow.com/a/11673600
@@ -919,12 +922,16 @@ if __name__ == '__main__':
         #subprocess.call(["tesseract", result.screenshot_filename, result.ocr_filename, "--oem", "1", "-l", "eng+deu"])
 
         print('#' + str(result.rank) + ': ' + result.url)
-        if result.failed:
-            print('-> failed: ' + result.failed_reason)
-        if result.skipped:
-            print('-> skipped: ' + result.skipped_reason)
         if result.stopped_waiting:
             print('-> stopped waiting for ' + result.stopped_waiting_reason)
+        if result.skipped:
+            print('-> skipped: ' + result.skipped_reason)
+        if result.failed:
+            print('-> failed: ' + result.failed_reason)
+            if result.failed_exception is not None:
+                print(result.failed_exception)
+            if result.failed_traceback is not None:
+                print(result.failed_traceback)
 
     # crawl the pages in parallel
     for rank, url in enumerate(tranco_top_100, start=1):
