@@ -192,6 +192,7 @@ class WebpageCrawler:
         self.tab.Network.responseReceived = self._event_response_received
         self.tab.Network.loadingFailed = self._event_loading_failed
         self.tab.Page.loadEventFired = self._event_load_event_fired
+        self.tab.Page.javascriptDialogOpening = self._event_javascript_dialog_opening
         
         # start our tab after callbacks have been registered
         self.tab.start()
@@ -251,6 +252,12 @@ class WebpageCrawler:
         page may still process some JavaScript.
         """
         self._is_loaded = True
+
+    def _event_javascript_dialog_opening(self, message, type, **kwargs):
+        if type == 'alert':
+            self.tab.Page.handleJavaScriptDialog(accept=True)
+        else:
+            self.tab.Page.handleJavaScriptDialog(accept=False)
 
     def _deny_permission(self, permission, hostname):
         self._set_permission(permission, 'denied', 'https://' + hostname + '/*')
@@ -892,6 +899,7 @@ if __name__ == '__main__':
 
     #tranco_top_100 = ['cnn.com', 'twitch.tv', 'microsoft.com', 'reddit.com', 'zeit.de', 'godaddy.com', 'dropbox.com']
     #tranco_top_100 = ['yelp.com']
+    #missing = ['onlinesbi.com', 'plesk.com', 'coinmarketcap.com', 'techtarget.com', 'adweek.com', 'spectrum.com']
 
     # triple mutex:
     # https://stackoverflow.com/a/11673600
