@@ -29,9 +29,6 @@ class WebpageResult:
         self.failed_exception = None
         self.failed_traceback = None
 
-        self.skipped = False
-        self.skipped_reason = None
-
         self.stopped_waiting = False
         self.stopped_waiting_reason = None
 
@@ -53,10 +50,6 @@ class WebpageResult:
         self.failed_reason = reason
         self.failed_exception = exception
         self.failed_traceback = traceback
-
-    def set_skipped(self, reason):
-        self.skipped = True
-        self.skipped_reason = reason
 
     def set_stopped_waiting(self, reason):
         self.stopped_waiting = True
@@ -276,9 +269,6 @@ class WebpageCrawler:
         # check whether language is english or german
         lang = self.detect_language()
         self.webpage.set_language(lang)
-        if lang != 'en' and lang != 'de':
-            self.webpage.set_skipped('unimplemented language `' + lang + '`')
-            return
 
         # check whether the consent management platform is used
         # -> there should be a cookie notice
@@ -950,8 +940,6 @@ if __name__ == '__main__':
         print(f'#{str(result.rank)}: {result.url}')
         if result.stopped_waiting:
             print(f'-> stopped waiting for {result.stopped_waiting_reason}')
-        if result.skipped:
-            print(f'-> skipped: {result.skipped_reason}')
         if result.failed:
             print(f'-> failed: {result.failed_reason}' + (f' ({result.failed_exception})' if result.failed_exception is not None else ''))
             if result.failed_traceback is not None:
