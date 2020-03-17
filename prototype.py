@@ -652,13 +652,29 @@ class WebpageCrawler:
         `I DON'T CARE ABOUT COOKIES`.
         See: https://www.i-dont-care-about-cookies.eu/
         """
-        node_ids = []
-        root_node_id = self.tab.DOM.getDocument().get('root').get('nodeId')
-        for rule in self.abp_filter.get_applicable_rules(self.webpage.hostname):
-            search_results = self.tab.DOM.querySelectorAll(nodeId=root_node_id, selector=rule.selector.get('value'))
-            node_ids = node_ids + search_results.get('nodeIds')
 
-        return node_ids
+        rules = [rule.selector.get('value') for rule in self.abp_filter.get_applicable_rules(self.webpage.hostname)]
+        rules_js = json.dumps(rules)
+
+        js_function = """
+            (function() {
+                let rules = """ + rules_js + """;
+                let cookie_notices = [];
+
+                rules.forEach(function(rule) {
+                    let elements = document.querySelectorAll(rule);
+                    elements.forEach(function(element) {
+                        cookie_notices.push(element);
+                    });
+                });
+
+                return cookie_notices;
+            })();"""
+
+        query_result = self.tab.Runtime.evaluate(expression=js_function).get('result')
+        array_result = self.tab.Runtime.getProperties(objectId=query_result.get('objectId'), ownProperties=True).get('result')
+        remote_object_ids = [array_element.get('value').get('objectId') for array_element in array_result if array_element.get('enumerable')]
+        return [self._get_node_id_for_remote_object_id(remote_object_id) for remote_object_id in remote_object_ids]
 
     def is_cmp_function_defined(self):
         """Checks whether the function `__cmp` is defined on the JavaScript
