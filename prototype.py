@@ -176,8 +176,10 @@ class WebpageCrawler:
 
             # detect cookie notices
             self.detect_cookie_notices()
+        except pychrome.exceptions.TimeoutException as e:
+            self.webpage.set_failed(str(e), type(e).__name__)
         except Exception as e:
-            self.webpage.set_failed(type(e).__name__, str(e), traceback.format_exc())
+            self.webpage.set_failed(str(e), type(e).__name__, traceback.format_exc())
 
         # stop and close the tab
         self.tab.stop()
@@ -921,15 +923,13 @@ if __name__ == '__main__':
         # ocr with tesseract
         #subprocess.call(["tesseract", result.screenshot_filename, result.ocr_filename, "--oem", "1", "-l", "eng+deu"])
 
-        print('#' + str(result.rank) + ': ' + result.url)
+        print(f'#{str(result.rank)}: {result.url}')
         if result.stopped_waiting:
-            print('-> stopped waiting for ' + result.stopped_waiting_reason)
+            print(f'-> stopped waiting for {result.stopped_waiting_reason}')
         if result.skipped:
-            print('-> skipped: ' + result.skipped_reason)
+            print(f'-> skipped: {result.skipped_reason}')
         if result.failed:
-            print('-> failed: ' + result.failed_reason)
-            if result.failed_exception is not None:
-                print(result.failed_exception)
+            print(f'-> failed: {result.failed_reason}' + (f' ({result.failed_exception})' if result.failed_exception is not None else ''))
             if result.failed_traceback is not None:
                 print(result.failed_traceback)
 
