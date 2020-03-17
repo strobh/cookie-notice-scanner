@@ -25,10 +25,11 @@ from tranco import Tranco
 
 
 class WebpageResult:
-    def __init__(self, rank=None, url=''):
+    def __init__(self, rank=None, hostname='', protocol='https'):
         self.rank = rank
-        self.url = url
-        self.hostname = urlparse(self.url).hostname
+        self.hostname = hostname
+        self.protocol = protocol
+        self.url = f'{self.protocol}://{self.hostname}'
 
         self.failed = False
         self.failed_reason = None
@@ -50,6 +51,10 @@ class WebpageResult:
         self.cookie_notices = {}
 
         self._json_excluded_fields = ['_json_excluded_fields', 'screenshots']
+
+    def set_protocol(self, protocol):
+        self.protocol = protocol
+        self.url = f'{self.protocol}://{self.hostname}'
 
     def set_failed(self, reason, exception=None, traceback=None):
         self.failed = True
@@ -160,6 +165,10 @@ class WebpageCrawler:
             if waited >= 30:
                 self.webpage.set_stopped_waiting('load event')
 
+            # return if failed to load page
+            if self.webpage.failed:
+                return self.webpage
+
             # wait for JavaScript code to be run, after the page has been loaded
             self.tab.wait(5)
 
@@ -238,11 +247,11 @@ class WebpageCrawler:
         self.webpage.add_response(requested_url=url, status=status, mime_type=mime_type, headers=headers)
 
         if requestId == self.requestId and (str(status).startswith('4') or str(status).startswith('5')):
-            self.webpage.set_failed('status code `' + str(status) + '`')
+            self.webpage.set_failed('status code', str(status))
 
     def _event_loading_failed(self, requestId, errorText, **kwargs):
         if requestId == self.requestId:
-            self.webpage.set_failed('loading failed `' + errorText + '`')
+            self.webpage.set_failed('loading failed', errorText)
 
     def _event_load_event_fired(self, timestamp, **kwargs):
         """Will be called when the page sends an load event.
@@ -851,6 +860,16 @@ class Browser:
         self.abp_filter = AdblockPlusFilter(abp_filter_filename)
 
     def crawl_page(self, webpage):
+        result = self._crawl_page(webpage)
+
+        # if https did not work, try http again
+        if result.failed and result.failed_exception == 'net::ERR_CERT_COMMON_NAME_INVALID':
+            webpage.set_protocol('http')
+            result = self._crawl_page(webpage)
+
+        return result
+
+    def _crawl_page(self, webpage):
         global lock_m, lock_n, lock_l
 
         # triple mutex
@@ -952,8 +971,8 @@ if __name__ == '__main__':
                 print(result.failed_traceback)
 
     # crawl the pages in parallel
-    for rank, url in enumerate(tranco_top_100, start=1):
-        webpage = WebpageResult(rank=rank, url='https://' + url)
+    for rank, domain in enumerate(tranco_top_100, start=1):
+        webpage = WebpageResult(rank=rank, hostname=domain)
         pool.apply_async(f_crawl_page, args=(webpage,), callback=f_page_crawled)
 
     # close pool
