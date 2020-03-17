@@ -18,6 +18,12 @@ from pprint import pprint
 from tranco import Tranco
 
 
+# Possible improvements:
+# - if cookie notice is displayed in iframe (e.g. forbes.com), currently the 
+# iframe is assumed to be the cookie notice; one might even walk up the tree 
+# even further and find a fixed or full-width parent there
+
+
 class WebpageResult:
     def __init__(self, rank=None, url=''):
         self.rank = rank
