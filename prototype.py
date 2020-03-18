@@ -44,6 +44,7 @@ class Webpage:
         self.url = f'{self.protocol}://{self.hostname}'
 
 
+FAILED_REASON_TIMEOUT = 'Page.navigate timeout'
 FAILED_REASON_STATUS_CODE = 'status code'
 FAILED_REASON_LOADING = 'loading failed'
 
@@ -207,7 +208,7 @@ class WebpageCrawler:
             # detect cookie notices
             self.detect_cookie_notices()
         except pychrome.exceptions.TimeoutException as e:
-            self.result.set_failed(str(e), type(e).__name__)
+            self.result.set_failed(FAILED_REASON_TIMEOUT, type(e).__name__)
         except Exception as e:
             self.result.set_failed(str(e), type(e).__name__, traceback.format_exc())
 
@@ -885,16 +886,16 @@ class Browser:
         result = self._crawl_page(webpage)
 
         # try https with subdomain www
-        if result.failed and result.failed_reason == FAILED_REASON_LOADING:
+        if result.failed and (result.failed_reason == FAILED_REASON_LOADING or result.failed_reason == FAILED_REASON_TIMEOUT):
             webpage.set_subdomain('www')
             result = self._crawl_page(webpage)
         # try http without subdomain www
-        if result.failed and result.failed_reason == FAILED_REASON_LOADING:
+        if result.failed and (result.failed_reason == FAILED_REASON_LOADING or result.failed_reason == FAILED_REASON_TIMEOUT):
             webpage.remove_subdomain()
             webpage.set_protocol('http')
             result = self._crawl_page(webpage)
         # try http with www subdomain
-        if result.failed and result.failed_reason == FAILED_REASON_LOADING:
+        if result.failed and (result.failed_reason == FAILED_REASON_LOADING or result.failed_reason == FAILED_REASON_TIMEOUT):
             webpage.set_subdomain('www')
             result = self._crawl_page(webpage)
 
