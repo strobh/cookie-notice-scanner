@@ -27,6 +27,7 @@ if __name__ == '__main__':
                 'hostname': data.get('hostname'),
                 'failed': data.get('failed'),
                 'skipped': data.get('skipped', False),
+                'stopped_waiting': data.get('stopped_waiting'),
                 'language': data.get('language'),
                 'is_cmp_defined': data.get('is_cmp_defined'),
                 'rules': data.get('cookie_notice_count').get('rules', 0) > 0,
@@ -36,6 +37,7 @@ if __name__ == '__main__':
 
     total = len(results)
     failed_skipped_count = len(filter_by_lambda(results, lambda x: x.get('failed') or x.get('skipped')))
+    stopped_waiting_count = len(filter_by_lambda(results, lambda x: x.get('stopped_waiting')))
     not_failed_or_skipped_count = total-failed_skipped_count
     cmp_defined_count = len(filter_by_lambda(results, lambda x: not x.get('failed') and x.get('is_cmp_defined')))
     rules_detection_count = len(filter_by_lambda(results, lambda x: not x.get('failed') and x.get('rules')))
@@ -47,6 +49,7 @@ if __name__ == '__main__':
 
     print(f'total: {total}')
     print(f'failed_skipped_count: {failed_skipped_count}')
+    print(f'stopped_waiting_count: {stopped_waiting_count}')
     print(f'not_failed_or_skipped_count: {not_failed_or_skipped_count}')
     print(f'cmp_defined_count: {cmp_defined_count}')
     print(f'rules_detection_count: {rules_detection_count}')
