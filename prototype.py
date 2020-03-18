@@ -7,6 +7,7 @@ import multiprocessing as mp
 import os
 import subprocess
 import traceback
+from enum import Enum
 from functools import partial
 from multiprocessing import Lock
 from urllib.parse import urlparse
@@ -35,6 +36,16 @@ class Webpage:
     def set_protocol(self, protocol):
         self.protocol = protocol
         self.url = f'{self.protocol}://{self.hostname}'
+
+    def set_subdomain(self, subdomain):
+        self.url = f'{self.protocol}://{subdomain}.{self.hostname}'
+
+    def remove_subdomain(self):
+        self.url = f'{self.protocol}://{self.hostname}'
+
+
+FAILED_REASON_STATUS_CODE = 'status code'
+FAILED_REASON_LOADING = 'loading failed'
 
 
 class WebpageResult:
@@ -162,6 +173,7 @@ class WebpageCrawler:
             lock_n.acquire()
             with lock_m:
                 lock_n.release()
+                self._delete_all_cookies()
                 self.tab.Page.bringToFront()
                 self.tab.Page.navigate(url=self.webpage.url, _timeout=15)
                 self.tab.wait(1)
@@ -257,11 +269,11 @@ class WebpageCrawler:
         self.result.add_response(requested_url=url, status=status, mime_type=mime_type, headers=headers)
 
         if requestId == self.requestId and (str(status).startswith('4') or str(status).startswith('5')):
-            self.result.set_failed('status code', str(status))
+            self.result.set_failed(FAILED_REASON_STATUS_CODE, str(status))
 
     def _event_loading_failed(self, requestId, errorText, **kwargs):
         if requestId == self.requestId:
-            self.result.set_failed('loading failed', errorText)
+            self.result.set_failed(FAILED_REASON_LOADING, errorText)
 
     def _event_load_event_fired(self, timestamp, **kwargs):
         """Will be called when the page sends an load event.
@@ -872,9 +884,18 @@ class Browser:
     def crawl_page(self, webpage):
         result = self._crawl_page(webpage)
 
-        # if https did not work, try http again
-        if result.failed:
+        # try https with subdomain www
+        if result.failed and result.failed_reason == FAILED_REASON_LOADING:
+            webpage.set_subdomain('www')
+            result = self._crawl_page(webpage)
+        # try http without subdomain www
+        if result.failed and result.failed_reason == FAILED_REASON_LOADING:
+            webpage.remove_subdomain()
             webpage.set_protocol('http')
+            result = self._crawl_page(webpage)
+        # try http with www subdomain
+        if result.failed and result.failed_reason == FAILED_REASON_LOADING:
+            webpage.set_subdomain('www')
             result = self._crawl_page(webpage)
 
         return result
@@ -960,8 +981,8 @@ if __name__ == '__main__':
     lock_n = Lock()
     lock_l = Lock()
 
-    # create multiprocessor pool: ten tabs are processed in parallel at most
-    pool = mp.Pool(10)
+    # create multiprocessor pool: twelve tabs are processed in parallel at most
+    pool = mp.Pool(12)
 
     # create the browser and a helper function to crawl pages
     browser = Browser(abp_filter_filename='resources/cookie-notice-css-rules.txt')
