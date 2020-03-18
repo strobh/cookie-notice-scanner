@@ -1,6 +1,7 @@
+import glob
 import json
 import os
-import pprint
+from pprint import pprint
 
 def filter_by_lambda(results, filter_function):
     return [result for result in results if filter_function(result)]
@@ -54,3 +55,14 @@ if __name__ == '__main__':
     print(f'full_width_parent_detection_count: {full_width_parent_detection_count}')
     print(f'cmp_but_not_own_count: {cmp_but_not_own_count}')
     print(f'cmp_but_not_rules_count: {cmp_but_not_rules_count}')
+
+    """
+    failed_skipped = filter_by_lambda(results, lambda x: x.get('failed') or x.get('skipped'))
+    for fs in failed_skipped:
+        fileList = list(glob.glob(f'{RESULTS_DIRECTORY}/{fs.get("rank")}-{fs.get("hostname")}*'))
+        for filePath in fileList:
+            try:
+                os.remove(filePath)
+            except:
+                print("Error while deleting file : ", filePath)
+    """
