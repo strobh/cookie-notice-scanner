@@ -26,7 +26,7 @@ if __name__ == '__main__':
                 'url': data.get('url'),
                 'hostname': data.get('hostname'),
                 'failed': data.get('failed'),
-                'skipped': data.get('skipped'),
+                'skipped': data.get('skipped', False),
                 'language': data.get('language'),
                 'is_cmp_defined': data.get('is_cmp_defined'),
                 'rules': data.get('cookie_notice_count').get('rules', 0) > 0,
