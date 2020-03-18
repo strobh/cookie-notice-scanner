@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import argparse
 import base64
 import json
 import multiprocessing as mp
@@ -24,12 +25,24 @@ from tranco import Tranco
 # even further and find a fixed or full-width parent there
 
 
-class WebpageResult:
+class Webpage:
     def __init__(self, rank=None, hostname='', protocol='https'):
         self.rank = rank
         self.hostname = hostname
         self.protocol = protocol
         self.url = f'{self.protocol}://{self.hostname}'
+
+    def set_protocol(self, protocol):
+        self.protocol = protocol
+        self.url = f'{self.protocol}://{self.hostname}'
+
+
+class WebpageResult:
+    def __init__(self, webpage):
+        self.rank = webpage.rank
+        self.hostname = webpage.hostname
+        self.protocol = webpage.protocol
+        self.url = webpage.url
 
         self.failed = False
         self.failed_reason = None
@@ -51,10 +64,6 @@ class WebpageResult:
         self.cookie_notices = {}
 
         self._json_excluded_fields = ['_json_excluded_fields', 'screenshots']
-
-    def set_protocol(self, protocol):
-        self.protocol = protocol
-        self.url = f'{self.protocol}://{self.hostname}'
 
     def set_failed(self, reason, exception=None, traceback=None):
         self.failed = True
@@ -129,9 +138,10 @@ class WebpageCrawler:
         self.tab = tab
         self.abp_filter = abp_filter
         self.webpage = webpage
+        self.result = WebpageResult(webpage)
 
     def get_result(self):
-        return self.webpage
+        return self.result
 
     def crawl(self):
         global lock_m, lock_n, lock_l
@@ -163,11 +173,11 @@ class WebpageCrawler:
                 waited += 0.1
 
             if waited >= 30:
-                self.webpage.set_stopped_waiting('load event')
+                self.result.set_stopped_waiting('load event')
 
             # return if failed to load page
-            if self.webpage.failed:
-                return self.webpage
+            if self.result.failed:
+                return self.result
 
             # wait for JavaScript code to be run, after the page has been loaded
             self.tab.wait(5)
@@ -185,14 +195,14 @@ class WebpageCrawler:
             # detect cookie notices
             self.detect_cookie_notices()
         except pychrome.exceptions.TimeoutException as e:
-            self.webpage.set_failed(str(e), type(e).__name__)
+            self.result.set_failed(str(e), type(e).__name__)
         except Exception as e:
-            self.webpage.set_failed(str(e), type(e).__name__, traceback.format_exc())
+            self.result.set_failed(str(e), type(e).__name__, traceback.format_exc())
 
         # stop and close the tab
         self.tab.stop()
 
-        return self.webpage
+        return self.result
 
     def _setup_tab(self):
         # set callbacks for request and response logging
@@ -228,7 +238,7 @@ class WebpageCrawler:
         there can still be connection issues.
         """
         url = request['url']
-        self.webpage.add_request(request_url=url)
+        self.result.add_request(request_url=url)
 
         # the request id of the first request is stored to be able to detect failures
         if self.requestId == None:
@@ -244,14 +254,14 @@ class WebpageCrawler:
         mime_type = response['mimeType']
         status = response['status']
         headers = response['headers']
-        self.webpage.add_response(requested_url=url, status=status, mime_type=mime_type, headers=headers)
+        self.result.add_response(requested_url=url, status=status, mime_type=mime_type, headers=headers)
 
         if requestId == self.requestId and (str(status).startswith('4') or str(status).startswith('5')):
-            self.webpage.set_failed('status code', str(status))
+            self.result.set_failed('status code', str(status))
 
     def _event_loading_failed(self, requestId, errorText, **kwargs):
         if requestId == self.requestId:
-            self.webpage.set_failed('loading failed', errorText)
+            self.result.set_failed('loading failed', errorText)
 
     def _event_load_event_fired(self, timestamp, **kwargs):
         """Will be called when the page sends an load event.
@@ -279,21 +289,21 @@ class WebpageCrawler:
         global lock_m, lock_n, lock_l
 
         # store html of page
-        self.webpage.set_html(self.get_html(self.root_node.get('nodeId')))
+        self.result.set_html(self.get_html(self.root_node.get('nodeId')))
 
         # check whether language is english or german
         lang = self.detect_language()
-        self.webpage.set_language(lang)
+        self.result.set_language(lang)
 
         # check whether the consent management platform is used
         # -> there should be a cookie notice
         is_cmp_defined = self.is_cmp_function_defined()
-        self.webpage.set_cmp_defined(is_cmp_defined)
+        self.result.set_cmp_defined(is_cmp_defined)
 
         # find cookie notice by using AdblockPlus rules
         cookie_notice_rule_node_ids = set(self.find_cookie_notices_by_rules())
         cookie_notice_rule_node_ids = self._filter_visible_nodes(cookie_notice_rule_node_ids)
-        self.webpage.add_cookie_notices('rules', self.get_cookie_notice_data_of_nodes(cookie_notice_rule_node_ids))
+        self.result.add_cookie_notices('rules', self.get_cookie_notice_data_of_nodes(cookie_notice_rule_node_ids))
 
         # find string `cookie` in nodes and store the closest parent block element
         cookie_node_ids = self.search_for_string('cookie')
@@ -303,12 +313,12 @@ class WebpageCrawler:
         # find fixed parent nodes (i.e. having style `position: fixed`) with string `cookie`
         cookie_notice_fixed_node_ids = self.find_cookie_notices_by_fixed_parent(cookie_node_ids)
         cookie_notice_fixed_node_ids = self._filter_visible_nodes(cookie_notice_fixed_node_ids)
-        self.webpage.add_cookie_notices('fixed-parent', self.get_cookie_notice_data_of_nodes(cookie_notice_fixed_node_ids))
+        self.result.add_cookie_notices('fixed-parent', self.get_cookie_notice_data_of_nodes(cookie_notice_fixed_node_ids))
 
         # find full-width parent nodes with string `cookie`
         cookie_notice_full_width_node_ids = self.find_cookie_notices_by_full_width_parent(cookie_node_ids)
         cookie_notice_full_width_node_ids = self._filter_visible_nodes(cookie_notice_full_width_node_ids)
-        self.webpage.add_cookie_notices('full-width-parent', self.get_cookie_notice_data_of_nodes(cookie_notice_full_width_node_ids))
+        self.result.add_cookie_notices('full-width-parent', self.get_cookie_notice_data_of_nodes(cookie_notice_full_width_node_ids))
 
         # triple mutex
         with lock_l:
@@ -324,7 +334,7 @@ class WebpageCrawler:
                 self.take_screenshots_of_visible_nodes(cookie_notice_full_width_node_ids, 'full-width-parent')
 
         # get cookies and delete them afterwards
-        #self.webpage.set_cookies('all', self._get_all_cookies())
+        #self.result.set_cookies('all', self._get_all_cookies())
         self._delete_all_cookies()
 
     def get_cookie_notice_data_of_nodes(self, node_ids):
@@ -795,7 +805,7 @@ class WebpageCrawler:
         screenshot_viewport = {'x': x, 'y': y, 'width': width, 'height': height, 'scale': 1}
 
         # take screenshot and store it
-        self.webpage.add_screenshot(name, self.tab.Page.captureScreenshot(clip=screenshot_viewport)['data'])
+        self.result.add_screenshot(name, self.tab.Page.captureScreenshot(clip=screenshot_viewport)['data'])
 
     def _highlight_node(self, node_id):
         """Highlight the given node with an overlay."""
@@ -863,7 +873,7 @@ class Browser:
         result = self._crawl_page(webpage)
 
         # if https did not work, try http again
-        if result.failed and result.failed_exception == 'net::ERR_CERT_COMMON_NAME_INVALID':
+        if result.failed:
             webpage.set_protocol('http')
             result = self._crawl_page(webpage)
 
@@ -920,9 +930,20 @@ class AdblockPlusFilter:
 
 
 if __name__ == '__main__':
+    ARG_TOP_2000 = '1'
+    ARG_EVERY_500 = '2'
+
+    parser = argparse.ArgumentParser(description='Process some integers.')
+    parser.add_argument('--dataset', dest='dataset', nargs='?', default='1',
+                        help=f'the dataset to scan (`{ARG_TOP_2000}` for top 2000 domains, `{ARG_EVERY_500}` for every 500th domain)')
+    args = parser.parse_args()
+
     tranco = Tranco(cache=True, cache_dir='tranco')
     tranco_list = tranco.list(date='2020-03-01')
-    tranco_top_100 = tranco_list.top(2000)
+    if args.dataset == ARG_TOP_2000:
+        dataset = tranco_list.top(2000)
+    else:
+        dataset = [domain for rank, domain in enumerate(tranco_list.top()) if rank % 500 == 0]
 
     #urls = []
     #with open('resources/urls.txt') as f:
@@ -971,8 +992,8 @@ if __name__ == '__main__':
                 print(result.failed_traceback)
 
     # crawl the pages in parallel
-    for rank, domain in enumerate(tranco_top_100, start=1):
-        webpage = WebpageResult(rank=rank, hostname=domain)
+    for rank, domain in enumerate(dataset, start=1):
+        webpage = Webpage(rank=rank, hostname=domain)
         pool.apply_async(f_crawl_page, args=(webpage,), callback=f_page_crawled)
 
     # close pool
