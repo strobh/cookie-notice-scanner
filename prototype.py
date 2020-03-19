@@ -174,13 +174,13 @@ class WebpageCrawler:
         
         try:
             # open url: triple mutex
-            lock_n.acquire()
-            with lock_m:
-                lock_n.release()
-                self._clear_browser()
-                self.tab.Page.bringToFront()
-                self.tab.Page.navigate(url=self.webpage.url, _timeout=15)
-                #self.tab.wait(1)
+            #lock_n.acquire()
+            #with lock_m:
+            #    lock_n.release()
+            self._clear_browser()
+            self.tab.Page.bringToFront()
+            self.tab.Page.navigate(url=self.webpage.url, _timeout=15)
+            #self.tab.wait(1)
 
             # we wait for our load event to be fired (see `_event_load_event_fired`)
             waited = 0
@@ -190,6 +190,7 @@ class WebpageCrawler:
 
             if waited >= 30:
                 self.result.set_stopped_waiting('load event')
+                self.tab.Page.stopLoading()
 
             # return if failed to load page
             if self.result.failed:
@@ -199,11 +200,11 @@ class WebpageCrawler:
             self.tab.wait(5)
 
             # bring to front: triple mutex
-            lock_n.acquire()
-            with lock_m:
-                lock_n.release()
-                self.tab.Page.bringToFront()
-                #self.tab.wait(3)
+            #lock_n.acquire()
+            #with lock_m:
+            #    lock_n.release()
+            #    self.tab.Page.bringToFront()
+            #    self.tab.wait(3)
 
             # get root node of document, is needed to be sure that the DOM is loaded
             self.root_node = self.tab.DOM.getDocument().get('root')
@@ -218,13 +219,23 @@ class WebpageCrawler:
         except Exception as e:
             self.result.set_failed(str(e), type(e).__name__, traceback.format_exc())
 
-        # stop the browser from executing javascript
-        self.tab.Emulation.setScriptExecutionDisabled(value=True)
-        self.tab.wait(0.1)
+        try:
+            # stop the browser from executing javascript
+            self.tab.Emulation.setScriptExecutionDisabled(value=True)
+            self.tab.wait(0.1)
+        except Exception as e:
+            print(f'script execution disabling failed ({self.webpage.url})')
 
-        # clear the browser and stop the tab
-        self._clear_browser()
-        self.tab.wait(0.1)
+        try:
+            # clear the browser
+            self._clear_browser()
+            self.tab.wait(0.1)
+        except Exception as e:
+            print(type(e).__name__)
+            print(traceback.format_exc())
+            print(f'clearing browser failed ({self.webpage.url})')
+
+        # stop the tab
         self.tab.stop()
 
         return self.result
@@ -353,16 +364,16 @@ class WebpageCrawler:
         self.result.add_cookie_notices('full-width-parent', self.get_cookie_notice_data_of_nodes(cookie_notice_full_width_node_ids))
 
         # triple mutex
-        with lock_l:
-            lock_n.acquire()
-            with lock_m:
-                lock_n.release()
-                self.tab.Page.bringToFront()
-                self.tab.wait(1)
-                self.take_screenshot('original')
-                self.take_screenshots_of_visible_nodes(cookie_notice_rule_node_ids, 'rules')
-                self.take_screenshots_of_visible_nodes(cookie_notice_fixed_node_ids, 'fixed-parent')
-                self.take_screenshots_of_visible_nodes(cookie_notice_full_width_node_ids, 'full-width-parent')
+        #with lock_l:
+        #    lock_n.acquire()
+        #    with lock_m:
+        #        lock_n.release()
+        self.tab.Page.bringToFront()
+        self.tab.wait(1)
+        self.take_screenshot('original')
+        self.take_screenshots_of_visible_nodes(cookie_notice_rule_node_ids, 'rules')
+        self.take_screenshots_of_visible_nodes(cookie_notice_fixed_node_ids, 'fixed-parent')
+        self.take_screenshots_of_visible_nodes(cookie_notice_full_width_node_ids, 'full-width-parent')
 
     def get_cookie_notice_data_of_nodes(self, node_ids):
         return [{
@@ -861,10 +872,11 @@ class WebpageCrawler:
         # store all domains that were requested
         first_level_domains = set()
         for loaded_url in self.loaded_urls:
+            # invalid urls raise an exception
             try:
                 first_level_domain = get_fld(loaded_url)
                 first_level_domains.add(first_level_domain)
-            except tld.exceptions.TldBadUrl as e:
+            except Exception as e:
                 pass
 
         # clear the data for each domain
@@ -934,10 +946,10 @@ class Browser:
         global lock_m, lock_n, lock_l
 
         # triple mutex
-        lock_n.acquire()
-        with lock_m:
-            lock_n.release()
-            tab = self.browser.new_tab()
+        #lock_n.acquire()
+        #with lock_m:
+        #    lock_n.release()
+        tab = self.browser.new_tab()
 
         page_crawler = WebpageCrawler(tab=tab, abp_filter=self.abp_filter, webpage=webpage)
         page_crawler.crawl()
