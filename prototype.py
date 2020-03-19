@@ -927,7 +927,8 @@ class WebpageCrawler:
     def take_screenshots_of_visible_nodes(self, node_ids, name):
         # filter only visible nodes
         # and replace the original node_id with their visible children if the node itself is not visible
-        node_ids = [visibility.get('visible_node') for visibility in (self.is_node_visible(node_id) for node_id in node_ids) if visibility and visibility.get('is_visible')]
+        node_ids = [visibility.get('visible_node') for visibility in (self.is_node_visible(node_id) for node_id in node_ids) 
+                    if visibility and visibility.get('is_visible')]
         self.take_screenshots_of_nodes(node_ids, name)
 
     def take_screenshots_of_nodes(self, node_ids, name):
