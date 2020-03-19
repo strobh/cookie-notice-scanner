@@ -1129,6 +1129,9 @@ if __name__ == '__main__':
                         help=f'the set of domains to scan: ' +
                              f'`{ARG_TOP_2000}` for the top 2000 domains, ' +
                              f'`{ARG_RANDOM}` for domains in file `resources/sampled-domains.txt`')
+    parser.add_argument('--results', dest='results_directory', nargs='?', default='results',
+                        help='the directory to store the the results in ' +
+                             '(default: `results`)')
 
     # load the correct dataset
     args = parser.parse_args()
@@ -1157,8 +1160,7 @@ if __name__ == '__main__':
     f_scan_page = partial(Browser.scan_page, browser)
 
     # create results directory if necessary
-    RESULTS_DIRECTORY = 'results'
-    os.makedirs(RESULTS_DIRECTORY, exist_ok=True)
+    os.makedirs(args.results_directory, exist_ok=True)
 
     # this is a callback function that is called when scanning a page finished
     def f_page_scanned(result):
@@ -1166,8 +1168,8 @@ if __name__ == '__main__':
         #result.exclude_field_from_json('cookies')
 
         # save results and screenshots
-        result.save_data(RESULTS_DIRECTORY)
-        result.save_screenshots(RESULTS_DIRECTORY)
+        result.save_data(args.results_directory)
+        result.save_screenshots(args.results_directory)
 
         # ocr with tesseract
         #subprocess.call(["tesseract", result.screenshot_filename, result.ocr_filename, "--oem", "1", "-l", "eng+deu"])
