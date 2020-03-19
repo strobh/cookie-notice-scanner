@@ -62,6 +62,8 @@ class WebpageResult:
         self.failed_exception = None
         self.failed_traceback = None
 
+        self.warnings = []
+
         self.stopped_waiting = False
         self.stopped_waiting_reason = None
 
@@ -83,6 +85,9 @@ class WebpageResult:
         self.failed_reason = reason
         self.failed_exception = exception
         self.failed_traceback = traceback
+
+    def add_warning(self, warning):
+        self.warnings.append(warning)
 
     def set_stopped_waiting(self, reason):
         self.stopped_waiting = True
@@ -219,12 +224,9 @@ class WebpageCrawler:
         except Exception as e:
             self.result.set_failed(str(e), type(e).__name__, traceback.format_exc())
 
-        try:
-            # stop the browser from executing javascript
-            self.tab.Emulation.setScriptExecutionDisabled(value=True)
-            self.tab.wait(0.1)
-        except Exception as e:
-            print(f'script execution disabling failed ({self.webpage.url})')
+        # stop the browser from executing javascript
+        self.tab.Emulation.setScriptExecutionDisabled(value=True)
+        self.tab.wait(0.1)
 
         try:
             # clear the browser
@@ -351,6 +353,7 @@ class WebpageCrawler:
         # find string `cookie` in nodes and store the closest parent block element
         cookie_node_ids = self.search_for_string('cookie')
         cookie_node_ids = set([self.find_parent_block_element(node_id) for node_id in cookie_node_ids])
+        cookie_node_ids = [cookie_node_id for cookie_node_id in cookie_node_ids if cookie_node_id is not None]
         cookie_node_ids = self._filter_visible_nodes(cookie_node_ids)
 
         # find fixed parent nodes (i.e. having style `position: fixed`) with string `cookie`
@@ -369,7 +372,7 @@ class WebpageCrawler:
         #    with lock_m:
         #        lock_n.release()
         self.tab.Page.bringToFront()
-        self.tab.wait(1)
+        #self.tab.wait(1)
         self.take_screenshot('original')
         self.take_screenshots_of_visible_nodes(cookie_notice_rule_node_ids, 'rules')
         self.take_screenshots_of_visible_nodes(cookie_notice_fixed_node_ids, 'fixed-parent')
@@ -416,10 +419,19 @@ class WebpageCrawler:
                 }
             }"""
 
-        visible_node_id = self.is_node_visible(node_id).get('visible_node')
-        remote_object_id = self._get_remote_object_id_for_node_id(visible_node_id)
-        result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
-        return result.get('value')
+        try:
+            visible_node_id = self.is_node_visible(node_id).get('visible_node')
+            remote_object_id = self._get_remote_object_id_for_node_id(visible_node_id)
+            result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
+            return result.get('value')
+        except pychrome.exceptions.CallMethodException as e:
+            self.result.add_warning({
+                'message': str(e),
+                'exception': type(e).__name__,
+                'traceback': traceback.format_exc().splitlines(),
+                'method': 'get_width',
+            })
+            return None
 
     def get_height(self, node_id):
         """Returns the height of the visible (child) node
@@ -450,10 +462,19 @@ class WebpageCrawler:
                 }
             }"""
 
-        visible_node_id = self.is_node_visible(node_id).get('visible_node')
-        remote_object_id = self._get_remote_object_id_for_node_id(visible_node_id)
-        result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
-        return result.get('value')
+        try:
+            visible_node_id = self.is_node_visible(node_id).get('visible_node')
+            remote_object_id = self._get_remote_object_id_for_node_id(visible_node_id)
+            result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
+            return result.get('value')
+        except pychrome.exceptions.CallMethodException as e:
+            self.result.add_warning({
+                'message': str(e),
+                'exception': type(e).__name__,
+                'traceback': traceback.format_exc().splitlines(),
+                'method': 'get_height',
+            })
+            return None
 
     def get_x(self, node_id):
         js_function = """
@@ -462,10 +483,19 @@ class WebpageCrawler:
                 return elem.getBoundingClientRect().top;
             }"""
 
-        visible_node_id = self.is_node_visible(node_id).get('visible_node')
-        remote_object_id = self._get_remote_object_id_for_node_id(visible_node_id)
-        result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
-        return result.get('value')
+        try:
+            visible_node_id = self.is_node_visible(node_id).get('visible_node')
+            remote_object_id = self._get_remote_object_id_for_node_id(visible_node_id)
+            result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
+            return result.get('value')
+        except pychrome.exceptions.CallMethodException as e:
+            self.result.add_warning({
+                'message': str(e),
+                'exception': type(e).__name__,
+                'traceback': traceback.format_exc().splitlines(),
+                'method': 'get_x',
+            })
+            return None
 
     def get_y(self, node_id):
         js_function = """
@@ -474,14 +504,32 @@ class WebpageCrawler:
                 return elem.getBoundingClientRect().left;
             }"""
 
-        visible_node_id = self.is_node_visible(node_id).get('visible_node')
-        remote_object_id = self._get_remote_object_id_for_node_id(visible_node_id)
-        result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
-        return result.get('value')
+        try:
+            visible_node_id = self.is_node_visible(node_id).get('visible_node')
+            remote_object_id = self._get_remote_object_id_for_node_id(visible_node_id)
+            result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
+            return result.get('value')
+        except pychrome.exceptions.CallMethodException as e:
+            self.result.add_warning({
+                'message': str(e),
+                'exception': type(e).__name__,
+                'traceback': traceback.format_exc().splitlines(),
+                'method': 'get_y',
+            })
+            return None
 
     def detect_language(self):
-        result = self.tab.Runtime.evaluate(expression='document.body.innerText').get('result')
-        return detect(result.get('value'))
+        try:
+            result = self.tab.Runtime.evaluate(expression='document.body.innerText').get('result')
+            return detect(result.get('value'))
+        except Exception as e:
+            self.result.add_warning({
+                'message': str(e),
+                'exception': type(e).__name__,
+                'traceback': traceback.format_exc().splitlines(),
+                'method': 'detect_language',
+            })
+            return None
 
     def search_for_string(self, search_string):
         """Searches the DOM for the given string and returns all found nodes."""
@@ -537,10 +585,19 @@ class WebpageCrawler:
                 return elem;
             }"""
 
-        # call the function `findClosestBlockElement` on the node
-        remote_object_id = self._get_remote_object_id_for_node_id(node_id)
-        result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
-        return self._get_node_id_for_remote_object_id(result.get('objectId'))
+        try:
+            # call the function `findClosestBlockElement` on the node
+            remote_object_id = self._get_remote_object_id_for_node_id(node_id)
+            result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
+            return self._get_node_id_for_remote_object_id(result.get('objectId'))
+        except pychrome.exceptions.CallMethodException as e:
+            self.result.add_warning({
+                'message': str(e),
+                'exception': type(e).__name__,
+                'traceback': traceback.format_exc().splitlines(),
+                'method': 'find_parent_block_element',
+            })
+            return None
 
     def find_cookie_notices_by_full_width_parent(self, cookie_node_ids):
         cookie_notice_full_width_node_ids = set()
@@ -629,20 +686,32 @@ class WebpageCrawler:
                 }
             }"""
 
-        remote_object_id = self._get_remote_object_id_for_node_id(node_id)
-        result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
+        try:
+            remote_object_id = self._get_remote_object_id_for_node_id(node_id)
+            result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
 
-        # if a boolean is returned, we did not find a full-width small parent
-        if result.get('type') == 'boolean':
+            # if a boolean is returned, we did not find a full-width small parent
+            if result.get('type') == 'boolean':
+                return {
+                    'parent_node_exists': result.get('value'),
+                    'parent_node': None,
+                }
+            # otherwise, we found one
+            else:
+                return {
+                    'parent_node_exists': True,
+                    'parent_node': self._get_node_id_for_remote_object_id(result.get('objectId')),
+                }
+        except pychrome.exceptions.CallMethodException as e:
+            self.result.add_warning({
+                'message': str(e),
+                'exception': type(e).__name__,
+                'traceback': traceback.format_exc().splitlines(),
+                'method': 'find_full_width_parent',
+            })
             return {
-                'parent_node_exists': result.get('value'),
+                'parent_node_exists': False,
                 'parent_node': None,
-            }
-        # otherwise, we found one
-        else:
-            return {
-                'parent_node_exists': True,
-                'parent_node': self._get_node_id_for_remote_object_id(result.get('objectId')),
             }
 
     def find_cookie_notices_by_fixed_parent(self, cookie_node_ids):
@@ -667,35 +736,47 @@ class WebpageCrawler:
                 return elem; // html node
             }"""
 
-        remote_object_id = self._get_remote_object_id_for_node_id(node_id)
-        result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
-        result_node_id = self._get_node_id_for_remote_object_id(result.get('objectId'))
+        try:
+            remote_object_id = self._get_remote_object_id_for_node_id(node_id)
+            result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
+            result_node_id = self._get_node_id_for_remote_object_id(result.get('objectId'))
 
-        # if the returned parent element is an html element,
-        # no fixed parent element was found
-        if self._is_html_node(result_node_id):
-            html_node_id = result_node_id
-            html_node = self.tab.DOM.describeNode(nodeId=html_node_id).get('node')
+            # if the returned parent element is an html element,
+            # no fixed parent element was found
+            if self._is_html_node(result_node_id):
+                html_node_id = result_node_id
+                html_node = self.tab.DOM.describeNode(nodeId=html_node_id).get('node')
 
-            # if the html element is the root html element, we have not found
-            # a fixed parent
-            if self._get_root_frame_id() == html_node.get('frameId'):
-                return {
-                    'has_fixed_parent': False,
-                    'fixed_parent': None,
-                }
-            # otherwise, the frame is considered to be the fixed parent
+                # if the html element is the root html element, we have not found
+                # a fixed parent
+                if self._get_root_frame_id() == html_node.get('frameId'):
+                    return {
+                        'has_fixed_parent': False,
+                        'fixed_parent': None,
+                    }
+                # otherwise, the frame is considered to be the fixed parent
+                else:
+                    frame_node_id = self.tab.DOM.getFrameOwner(frameId=html_node.get('frameId')).get('nodeId')
+                    return {
+                        'has_fixed_parent': True,
+                        'fixed_parent': frame_node_id,
+                    }
+            # otherwise, the returned parent element is a fixed element
             else:
-                frame_node_id = self.tab.DOM.getFrameOwner(frameId=html_node.get('frameId')).get('nodeId')
                 return {
                     'has_fixed_parent': True,
-                    'fixed_parent': frame_node_id,
+                    'fixed_parent': result_node_id,
                 }
-        # otherwise, the returned parent element is a fixed element
-        else:
+        except pychrome.exceptions.CallMethodException as e:
+            self.result.add_warning({
+                'message': str(e),
+                'exception': type(e).__name__,
+                'traceback': traceback.format_exc().splitlines(),
+                'method': 'find_fixed_parent',
+            })
             return {
-                'has_fixed_parent': True,
-                'fixed_parent': result_node_id,
+                'has_fixed_parent': False,
+                'fixed_parent': None,
             }
 
     def find_cookie_notices_by_rules(self):
@@ -727,7 +808,19 @@ class WebpageCrawler:
         query_result = self.tab.Runtime.evaluate(expression=js_function).get('result')
         array_result = self.tab.Runtime.getProperties(objectId=query_result.get('objectId'), ownProperties=True).get('result')
         remote_object_ids = [array_element.get('value').get('objectId') for array_element in array_result if array_element.get('enumerable')]
-        return [self._get_node_id_for_remote_object_id(remote_object_id) for remote_object_id in remote_object_ids]
+
+        cookie_notices = []
+        for remote_object_id in remote_object_ids:
+            try:
+                cookie_notices.append(self._get_node_id_for_remote_object_id(remote_object_id))
+            except pychrome.exceptions.CallMethodException as e:
+                self.result.add_warning({
+                    'message': str(e),
+                    'exception': type(e).__name__,
+                    'traceback': traceback.format_exc().splitlines(),
+                    'method': 'find_cookie_notices_by_rules',
+                })
+        return cookie_notices
 
     def is_cmp_function_defined(self):
         """Checks whether the function `__cmp` is defined on the JavaScript
@@ -802,27 +895,39 @@ class WebpageCrawler:
         # therefore it needs to be defined beforehand
         self.tab.Runtime.evaluate(expression=js_function)
 
-        # call the function `isVisible` on the node
-        remote_object_id = self._get_remote_object_id_for_node_id(node_id)
-        result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
+        try:
+            # call the function `isVisible` on the node
+            remote_object_id = self._get_remote_object_id_for_node_id(node_id)
+            result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
 
-        # if a boolean is returned, the object is not visible
-        if result.get('type') == 'boolean':
+            # if a boolean is returned, the object is not visible
+            if result.get('type') == 'boolean':
+                return {
+                    'is_visible': result.get('value'),
+                    'visible_node': None,
+                }
+            # otherwise, the object or one of its children is visible
+            else:
+                return {
+                    'is_visible': True,
+                    'visible_node': self._get_node_id_for_remote_object_id(result.get('objectId')),
+                }
+        except pychrome.exceptions.CallMethodException as e:
+            self.result.add_warning({
+                'message': str(e),
+                'exception': type(e).__name__,
+                'traceback': traceback.format_exc().splitlines(),
+                'method': 'is_node_visible',
+            })
             return {
-                'is_visible': result.get('value'),
+                'is_visible': False,
                 'visible_node': None,
-            }
-        # otherwise, the object or one of its children is visible
-        else:
-            return {
-                'is_visible': True,
-                'visible_node': self._get_node_id_for_remote_object_id(result.get('objectId')),
             }
 
     def take_screenshots_of_visible_nodes(self, node_ids, name):
         # filter only visible nodes
         # and replace the original node_id with their visible children if the node itself is not visible
-        node_ids = [visibility.get('visible_node') for visibility in (self.is_node_visible(node_id) for node_id in node_ids) if visibility.get('is_visible')]
+        node_ids = [visibility.get('visible_node') for visibility in (self.is_node_visible(node_id) for node_id in node_ids) if visibility and visibility.get('is_visible')]
         self.take_screenshots_of_nodes(node_ids, name)
 
     def take_screenshots_of_nodes(self, node_ids, name):
@@ -876,7 +981,7 @@ class WebpageCrawler:
             try:
                 first_level_domain = get_fld(loaded_url)
                 first_level_domains.add(first_level_domain)
-            except Exception as e:
+            except Exception:
                 pass
 
         # clear the data for each domain
@@ -890,13 +995,26 @@ class WebpageCrawler:
         return self.tab.DOM.requestNode(objectId=remote_object_id).get('nodeId')
 
     def _get_remote_object_id_for_node_id(self, node_id):
-        return self.tab.DOM.resolveNode(nodeId=node_id).get('object').get('objectId')
+        try:
+            remote_object_id = self.tab.DOM.resolveNode(nodeId=node_id).get('object').get('objectId')
+        except Exception:
+            remote_object_id = None
+        return remote_object_id
 
     def _filter_visible_nodes(self, node_ids):
         return [node_id for node_id in node_ids if self.is_node_visible(node_id).get('is_visible')]
 
     def _get_node_name(self, node_id):
-        return self.tab.DOM.describeNode(nodeId=node_id).get('node').get('nodeName').lower()
+        try:
+            return self.tab.DOM.describeNode(nodeId=node_id).get('node').get('nodeName').lower()
+        except pychrome.exceptions.CallMethodException as e:
+            self.result.add_warning({
+                'message': str(e),
+                'exception': type(e).__name__,
+                'traceback': traceback.format_exc().splitlines(),
+                'method': '_get_node_name',
+            })
+            return None
 
     def _is_script_or_style_node(self, node_id):
         node_name = self._get_node_name(node_id)
@@ -994,27 +1112,21 @@ class AdblockPlusFilter:
 
 if __name__ == '__main__':
     ARG_TOP_2000 = '1'
-    ARG_EVERY_500 = '2'
+    ARG_RANDOM = '2'
 
     parser = argparse.ArgumentParser(description='Process some integers.')
     parser.add_argument('--dataset', dest='dataset', nargs='?', default='1',
-                        help=f'the dataset to scan (`{ARG_TOP_2000}` for top 2000 domains, `{ARG_EVERY_500}` for every 500th domain)')
+                        help=f'the dataset to scan (`{ARG_TOP_2000}` for top 2000 domains, `{ARG_RANDOM}` for random sample from `sampled-domains.txt`)')
+
     args = parser.parse_args()
-
-    tranco = Tranco(cache=True, cache_dir='tranco')
-    tranco_list = tranco.list(date='2020-03-01')
     if args.dataset == ARG_TOP_2000:
-        dataset = tranco_list.top(2000)
+        tranco = Tranco(cache=True, cache_dir='tranco')
+        tranco_list = tranco.list(date='2020-03-01')
+        domains = tranco_list.top(2000)
     else:
-        dataset = [domain for rank, domain in enumerate(tranco_list.top()) if rank % 500 == 0]
-
-    #urls = []
-    #with open('resources/urls.txt') as f:
-    #    urls = [line.strip() for line in f]
-
-    #tranco_top_100 = ['cnn.com', 'twitch.tv', 'microsoft.com', 'reddit.com', 'zeit.de', 'godaddy.com', 'dropbox.com']
-    #tranco_top_100 = ['yelp.com']
-    #missing = ['onlinesbi.com', 'plesk.com', 'coinmarketcap.com', 'techtarget.com', 'adweek.com', 'spectrum.com']
+        domains = []
+        with open('resources/sampled-domains.txt') as f:
+            domains = [line.strip() for line in f]
 
     # triple mutex:
     # https://stackoverflow.com/a/11673600
@@ -1055,7 +1167,7 @@ if __name__ == '__main__':
                 print(result.failed_traceback)
 
     # crawl the pages in parallel
-    for rank, domain in enumerate(dataset, start=1):
+    for rank, domain in enumerate(domains, start=1):
         webpage = Webpage(rank=rank, hostname=domain)
         pool.apply_async(f_crawl_page, args=(webpage,), callback=f_page_crawled)
 
