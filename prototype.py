@@ -151,7 +151,7 @@ class WebpageResult:
         self._json_excluded_fields.append(excluded_field)
 
 
-class WebpageCrawler:
+class WebpageScanner:
     def __init__(self, tab, abp_filter, webpage):
         self.tab = tab
         self.abp_filter = abp_filter
@@ -162,7 +162,7 @@ class WebpageCrawler:
     def get_result(self):
         return self.result
 
-    def crawl(self):
+    def scan(self):
         global lock_m, lock_n, lock_l
 
         # initialize `_is_loaded` variable to `False`
@@ -391,9 +391,7 @@ class WebpageCrawler:
         return self.tab.DOM.getOuterHTML(nodeId=node_id).get('outerHTML')
 
     def get_width(self, node_id):
-        """Returns the width of the visible (child) node
-        or `full` if it takes the full width of the window.
-        """
+        """Returns the width of the visible (child) node or `full` if it takes the full width of the window."""
 
         js_function = """
             function getWidth(elem) {
@@ -434,9 +432,7 @@ class WebpageCrawler:
             return None
 
     def get_height(self, node_id):
-        """Returns the height of the visible (child) node
-        or `full` if it takes the full height of the window.
-        """
+        """Returns the height of the visible (child) node or `full` if it takes the full height of the window."""
 
         js_function = """
             function getHeight(elem) {
@@ -564,8 +560,7 @@ class WebpageCrawler:
         return node_ids
 
     def find_parent_block_element(self, node_id):
-        """Returns the nearest parent block element or the element itself if it
-        is a block element."""
+        """Returns the nearest parent block element or the element itself if it is a block element."""
 
         # if the node is a block element, just return it again
         if not self._is_inline_element(node_id):
@@ -786,7 +781,6 @@ class WebpageCrawler:
         `I DON'T CARE ABOUT COOKIES`.
         See: https://www.i-dont-care-about-cookies.eu/
         """
-
         rules = [rule.selector.get('value') for rule in self.abp_filter.get_applicable_rules(self.webpage.hostname)]
         rules_js = json.dumps(rules)
 
@@ -823,9 +817,7 @@ class WebpageCrawler:
         return cookie_notices
 
     def is_cmp_function_defined(self):
-        """Checks whether the function `__cmp` is defined on the JavaScript
-        `window` object."""
-
+        """Checks whether the function `__cmp` is defined on the JavaScript `window` object."""
         result = self.tab.Runtime.evaluate(expression="typeof window.__cmp !== 'undefined'").get('result')
         return result.get('value')
 
@@ -953,7 +945,6 @@ class WebpageCrawler:
 
     def _highlight_node(self, node_id):
         """Highlight the given node with an overlay."""
-
         color_content = {'r': 152, 'g': 196, 'b': 234, 'a': 0.5}
         color_padding = {'r': 184, 'g': 226, 'b': 183, 'a': 0.5}
         color_margin = {'r': 253, 'g': 201, 'b': 148, 'a': 0.5}
@@ -1042,26 +1033,37 @@ class Browser:
         # create helpers
         self.abp_filter = AdblockPlusFilter(abp_filter_filename)
 
-    def crawl_page(self, webpage):
-        result = self._crawl_page(webpage)
+    def scan_page(self, webpage):
+        """Tries to scan the webpage and returns the result of the scan.
+
+        Following possibilities are tried to scan the page:
+        - https protocol without `www.` subdomain
+        - https protocol with `www.` subdomain
+        - http protocol without `www.` subdomain
+        - http protocol with `www.` subdomain
+
+        The first scan whose result is not failed is returned.
+        """
+        result = self._scan_page(webpage)
 
         # try https with subdomain www
         if result.failed and (result.failed_reason == FAILED_REASON_LOADING or result.failed_reason == FAILED_REASON_TIMEOUT):
             webpage.set_subdomain('www')
-            result = self._crawl_page(webpage)
+            result = self._scan_page(webpage)
         # try http without subdomain www
         if result.failed and (result.failed_reason == FAILED_REASON_LOADING or result.failed_reason == FAILED_REASON_TIMEOUT):
             webpage.remove_subdomain()
             webpage.set_protocol('http')
-            result = self._crawl_page(webpage)
+            result = self._scan_page(webpage)
         # try http with www subdomain
         if result.failed and (result.failed_reason == FAILED_REASON_LOADING or result.failed_reason == FAILED_REASON_TIMEOUT):
             webpage.set_subdomain('www')
-            result = self._crawl_page(webpage)
+            result = self._scan_page(webpage)
 
         return result
 
-    def _crawl_page(self, webpage):
+    def _scan_page(self, webpage):
+        """Creates tab, scans webpage and returns result."""
         global lock_m, lock_n, lock_l
 
         # triple mutex
@@ -1070,11 +1072,13 @@ class Browser:
         #    lock_n.release()
         tab = self.browser.new_tab()
 
-        page_crawler = WebpageCrawler(tab=tab, abp_filter=self.abp_filter, webpage=webpage)
-        page_crawler.crawl()
+        # scan the page
+        page_scanner = WebpageScanner(tab=tab, abp_filter=self.abp_filter, webpage=webpage)
+        page_scanner.scan()
 
+        # close tab and obtain the results
         self.browser.close_tab(tab)
-        return page_crawler.get_result()
+        return page_scanner.get_result()
 
 
 class AdblockPlusFilter:
@@ -1086,9 +1090,11 @@ class AdblockPlusFilter:
             self._rules = [rule for rule in parse_filterlist(filterlist) if isinstance(rule, Filter) and rule.selector.get('type') == 'css']
 
     def get_applicable_rules(self, hostname):
+        """Returns the rules of the filter that are applicable for the given hostname."""
         return [rule for rule in self._rules if self._is_rule_applicable(rule, hostname)]
 
     def _is_rule_applicable(self, rule, hostname):
+        """Tests whethere a given rule is applicable for the given hostname."""
         domain_options = [(key, value) for key, value in rule.options if key == 'domain']
         if len(domain_options) == 0:
             return True
@@ -1115,10 +1121,16 @@ if __name__ == '__main__':
     ARG_TOP_2000 = '1'
     ARG_RANDOM = '2'
 
-    parser = argparse.ArgumentParser(description='Process some integers.')
+    # the dataset is passed to the script as argument
+    # (top 2000 domains or random sampled domains)
+    # default is top 2000 domains
+    parser = argparse.ArgumentParser(description='Scans a list of domains, identifies cookie notices and evaluates them.')
     parser.add_argument('--dataset', dest='dataset', nargs='?', default='1',
-                        help=f'the dataset to scan (`{ARG_TOP_2000}` for top 2000 domains, `{ARG_RANDOM}` for random sample from `sampled-domains.txt`)')
+                        help=f'the set of domains to scan: ' +
+                             f'`{ARG_TOP_2000}` for the top 2000 domains, ' +
+                             f'`{ARG_RANDOM}` for domains in file `resources/sampled-domains.txt`')
 
+    # load the correct dataset
     args = parser.parse_args()
     if args.dataset == ARG_TOP_2000:
         tranco = Tranco(cache=True, cache_dir='tranco')
@@ -1136,20 +1148,21 @@ if __name__ == '__main__':
     lock_n = Lock()
     lock_l = Lock()
 
-    # create multiprocessor pool: twelve tabs are processed in parallel at most
+    # create multiprocessor pool:
+    # currently only one tab is processed at a time -> not parallel
     pool = mp.Pool(1)
 
-    # create the browser and a helper function to crawl pages
+    # create the browser and a helper function to scan pages
     browser = Browser(abp_filter_filename='resources/cookie-notice-css-rules.txt')
-    f_crawl_page = partial(Browser.crawl_page, browser)
+    f_scan_page = partial(Browser.scan_page, browser)
 
     # create results directory if necessary
     RESULTS_DIRECTORY = 'results'
     os.makedirs(RESULTS_DIRECTORY, exist_ok=True)
 
-    # this is a callback function that is called when crawling a page finished
-    def f_page_crawled(result):
-        # cookies are not correct if pages are crawled in parallel
+    # this is a callback function that is called when scanning a page finished
+    def f_page_scanned(result):
+        # cookies are not correct if pages are scanned in parallel
         #result.exclude_field_from_json('cookies')
 
         # save results and screenshots
@@ -1167,10 +1180,10 @@ if __name__ == '__main__':
             if result.failed_traceback is not None:
                 print(result.failed_traceback)
 
-    # crawl the pages in parallel
+    # scan the pages in parallel
     for rank, domain in enumerate(domains, start=1):
         webpage = Webpage(rank=rank, hostname=domain)
-        pool.apply_async(f_crawl_page, args=(webpage,), callback=f_page_crawled)
+        pool.apply_async(f_scan_page, args=(webpage,), callback=f_page_scanned)
 
     # close pool
     pool.close()
