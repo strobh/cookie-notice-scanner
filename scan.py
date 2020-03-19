@@ -417,14 +417,16 @@ class WebpageScanner:
             }"""
 
         try:
-            remote_object_id = self._get_remote_object_id_for_node_id(node_id)
+            remote_object_id = self._get_remote_object_id_by_node_id(node_id)
             complete_result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
             object_result = self.tab.Runtime.getProperties(objectId=complete_result.get('objectId'), ownProperties=True).get('result')
-            return {
+            cookie_notice_properties = {
                     object_attribute.get('name'): object_attribute.get('value').get('value')
                     for object_attribute in object_result
                     if object_attribute.get('name') != '__proto__'
                 }
+            cookie_notice_properties['clickables'] = self.get_clickables_properties_of_cookie_notice(node_id)
+            return cookie_notice_properties
         except pychrome.exceptions.CallMethodException as e:
             self.result.add_warning({
                 'message': str(e),
@@ -433,6 +435,13 @@ class WebpageScanner:
                 'method': '_get_cookie_notice_properties',
             })
             return dict.fromkeys(['html', 'text', 'width', 'height', 'x', 'y'])
+
+    def get_clickables_properties_of_cookie_notice(self, node_id):
+        clickable_nodes = self.find_clickables_in_node(node_id)
+        return [{
+                'html': self.get_html(clickable_node),
+                'name': self._get_node_name(clickable_node),
+            } for clickable_node in clickable_nodes]
 
     def get_html(self, node_id):
         return self.tab.DOM.getOuterHTML(nodeId=node_id).get('outerHTML')
@@ -505,9 +514,9 @@ class WebpageScanner:
 
         try:
             # call the function `findClosestBlockElement` on the node
-            remote_object_id = self._get_remote_object_id_for_node_id(node_id)
+            remote_object_id = self._get_remote_object_id_by_node_id(node_id)
             result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
-            return self._get_node_id_for_remote_object_id(result.get('objectId'))
+            return self._get_node_id_by_remote_object_id(result.get('objectId'))
         except pychrome.exceptions.CallMethodException as e:
             self.result.add_warning({
                 'message': str(e),
@@ -605,7 +614,7 @@ class WebpageScanner:
             }"""
 
         try:
-            remote_object_id = self._get_remote_object_id_for_node_id(node_id)
+            remote_object_id = self._get_remote_object_id_by_node_id(node_id)
             result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
 
             # if a boolean is returned, we did not find a full-width small parent
@@ -618,7 +627,7 @@ class WebpageScanner:
             else:
                 return {
                     'parent_node_exists': True,
-                    'parent_node': self._get_node_id_for_remote_object_id(result.get('objectId')),
+                    'parent_node': self._get_node_id_by_remote_object_id(result.get('objectId')),
                 }
         except pychrome.exceptions.CallMethodException as e:
             self.result.add_warning({
@@ -655,9 +664,9 @@ class WebpageScanner:
             }"""
 
         try:
-            remote_object_id = self._get_remote_object_id_for_node_id(node_id)
+            remote_object_id = self._get_remote_object_id_by_node_id(node_id)
             result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
-            result_node_id = self._get_node_id_for_remote_object_id(result.get('objectId'))
+            result_node_id = self._get_node_id_by_remote_object_id(result.get('objectId'))
 
             # if the returned parent element is an html element,
             # no fixed parent element was found
@@ -723,31 +732,54 @@ class WebpageScanner:
             })();"""
 
         query_result = self.tab.Runtime.evaluate(expression=js_function).get('result')
-        array_result = self.tab.Runtime.getProperties(objectId=query_result.get('objectId'), ownProperties=True).get('result')
-        remote_object_ids = [array_element.get('value').get('objectId') for array_element in array_result if array_element.get('enumerable')]
-
-        cookie_notices = []
-        for remote_object_id in remote_object_ids:
-            try:
-                cookie_notices.append(self._get_node_id_for_remote_object_id(remote_object_id))
-            except pychrome.exceptions.CallMethodException as e:
-                self.result.add_warning({
-                    'message': str(e),
-                    'exception': type(e).__name__,
-                    'traceback': traceback.format_exc().splitlines(),
-                    'method': 'find_cookie_notices_by_rules',
-                })
-        return cookie_notices
+        return self._get_array_of_node_ids_by_remote_array(query_result.get('objectId'))
 
     def is_cmp_function_defined(self):
         """Checks whether the function `__cmp` is defined on the JavaScript `window` object."""
         result = self.tab.Runtime.evaluate(expression="typeof window.__cmp !== 'undefined'").get('result')
         return result.get('value')
 
-    def find_clickables_in_node(self, node):
-        pass
-        #getEventListeners()
+    def find_clickables_in_node(self, node_id):
+        # getEventListeners()
         # https://developers.google.com/web/tools/chrome-devtools/console/utilities?utm_campaign=2016q3&utm_medium=redirect&utm_source=dcc#geteventlistenersobject
+
+        js_function = """
+            function findClickablesInElement(elem) {
+                function findCoveringNodes(nodes) {
+                    let covering_nodes = Array.from(nodes);
+                    nodes.forEach(
+                        function(node1) {
+                            nodes.forEach(
+                                function(node2) {
+                                    // check whether node2 is contained if node2, if yes remove
+                                    if (node1 !== node2 && node1.contains(node2)) {
+                                        const index = covering_nodes.indexOf(node2);
+                                        covering_nodes.splice(index, 1);
+                                    }
+                                }
+                            );
+                        }
+                    );
+                    return covering_nodes;
+                }
+
+                if (!elem) elem = this;
+                let nodes = elem.querySelectorAll('a, button, input[type="button"], input[type="submit"], [role="button"], [role="link"]');
+                return findCoveringNodes(nodes);
+            }"""
+
+        try:
+            remote_object_id = self._get_remote_object_id_by_node_id(node_id)
+            query_result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
+            return self._get_array_of_node_ids_by_remote_array(query_result.get('objectId'))
+        except pychrome.exceptions.CallMethodException as e:
+            self.result.add_warning({
+                'message': str(e),
+                'exception': type(e).__name__,
+                'traceback': traceback.format_exc().splitlines(),
+                'method': 'find_clickables_in_node',
+            })
+            return []
 
     def is_node_visible(self, node_id):
         # Source: https://stackoverflow.com/a/41698614
@@ -812,7 +844,7 @@ class WebpageScanner:
 
         try:
             # call the function `isVisible` on the node
-            remote_object_id = self._get_remote_object_id_for_node_id(node_id)
+            remote_object_id = self._get_remote_object_id_by_node_id(node_id)
             result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
 
             # if a boolean is returned, the object is not visible
@@ -825,7 +857,7 @@ class WebpageScanner:
             else:
                 return {
                     'is_visible': True,
-                    'visible_node': self._get_node_id_for_remote_object_id(result.get('objectId')),
+                    'visible_node': self._get_node_id_by_remote_object_id(result.get('objectId')),
                 }
         except pychrome.exceptions.CallMethodException as e:
             self.result.add_warning({
@@ -906,10 +938,26 @@ class WebpageScanner:
     def _get_root_frame_id(self):
         return self.tab.Page.getFrameTree().get('frameTree').get('frame').get('id')
 
-    def _get_node_id_for_remote_object_id(self, remote_object_id):
+    def _get_node_id_by_remote_object_id(self, remote_object_id):
         return self.tab.DOM.requestNode(objectId=remote_object_id).get('nodeId')
 
-    def _get_remote_object_id_for_node_id(self, node_id):
+    def _get_array_of_node_ids_by_remote_array(self, remote_object_id):
+        array_result = self.tab.Runtime.getProperties(objectId=remote_object_id, ownProperties=True).get('result')
+        remote_object_ids = [array_element.get('value').get('objectId') for array_element in array_result if array_element.get('enumerable')]
+        node_ids = []
+        for remote_object_id in remote_object_ids:
+            try:
+                node_ids.append(self._get_node_id_by_remote_object_id(remote_object_id))
+            except pychrome.exceptions.CallMethodException as e:
+                self.result.add_warning({
+                    'message': str(e),
+                    'exception': type(e).__name__,
+                    'traceback': traceback.format_exc().splitlines(),
+                    'method': '_get_array_of_node_ids_by_remote_array',
+                })
+        return node_ids
+
+    def _get_remote_object_id_by_node_id(self, node_id):
         try:
             remote_object_id = self.tab.DOM.resolveNode(nodeId=node_id).get('object').get('objectId')
         except Exception:
