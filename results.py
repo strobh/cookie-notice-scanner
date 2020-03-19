@@ -7,7 +7,8 @@ def filter_by_lambda(results, filter_function):
     return [result for result in results if filter_function(result)]
 
 if __name__ == '__main__':
-    RESULTS_DIRECTORY = 'results-block'
+    #RESULTS_DIRECTORY = 'results-random'
+    RESULTS_DIRECTORY = 'results-top-2000'
 
     # get all relevant files
     files = []
@@ -26,7 +27,6 @@ if __name__ == '__main__':
                 'url': data.get('url'),
                 'hostname': data.get('hostname'),
                 'failed': data.get('failed'),
-                'skipped': data.get('skipped', False),
                 'stopped_waiting': data.get('stopped_waiting'),
                 'language': data.get('language'),
                 'is_cmp_defined': data.get('is_cmp_defined'),
@@ -36,9 +36,9 @@ if __name__ == '__main__':
             })
 
     total = len(results)
-    failed_skipped_count = len(filter_by_lambda(results, lambda x: x.get('failed') or x.get('skipped')))
+    failed_count = len(filter_by_lambda(results, lambda x: x.get('failed')))
     stopped_waiting_count = len(filter_by_lambda(results, lambda x: x.get('stopped_waiting')))
-    not_failed_or_skipped_count = total-failed_skipped_count
+    not_failed_count = total-failed_count
     cmp_defined_count = len(filter_by_lambda(results, lambda x: not x.get('failed') and x.get('is_cmp_defined')))
     rules_detection_count = len(filter_by_lambda(results, lambda x: not x.get('failed') and x.get('rules')))
     own_detection_count = len(filter_by_lambda(results, lambda x: not x.get('failed') and x.get('fixed_parent') or x.get('full_width_parent')))
@@ -48,9 +48,10 @@ if __name__ == '__main__':
     cmp_but_not_rules_count = len(filter_by_lambda(results, lambda x: not x.get('failed') and x.get('is_cmp_defined') and not x.get('rules')))
 
     print(f'total: {total}')
-    print(f'failed_skipped_count: {failed_skipped_count}')
+    print(f'failed_count: {failed_count}')
     print(f'stopped_waiting_count: {stopped_waiting_count}')
-    print(f'not_failed_or_skipped_count: {not_failed_or_skipped_count}')
+    print(f'not_failed_count: {not_failed_count}')
+    print('')
     print(f'cmp_defined_count: {cmp_defined_count}')
     print(f'rules_detection_count: {rules_detection_count}')
     print(f'own_detection_count: {own_detection_count}')
