@@ -17,7 +17,7 @@ from abp.filters import parse_filterlist
 from abp.filters.parser import Filter
 from langdetect import detect
 from pprint import pprint
-from tld import get_fld
+from tld import get_fld, get_tld
 from tranco import Tranco
 
 
@@ -28,21 +28,21 @@ from tranco import Tranco
 
 
 class Webpage:
-    def __init__(self, rank=None, hostname='', protocol='https'):
+    def __init__(self, rank=None, domain='', protocol='https'):
         self.rank = rank
-        self.hostname = hostname
+        self.domain = domain
         self.protocol = protocol
-        self.url = f'{self.protocol}://{self.hostname}'
+        self.url = f'{self.protocol}://{self.domain}'
 
     def set_protocol(self, protocol):
         self.protocol = protocol
-        self.url = f'{self.protocol}://{self.hostname}'
+        self.url = f'{self.protocol}://{self.domain}'
 
     def set_subdomain(self, subdomain):
-        self.url = f'{self.protocol}://{subdomain}.{self.hostname}'
+        self.url = f'{self.protocol}://{subdomain}.{self.domain}'
 
     def remove_subdomain(self):
-        self.url = f'{self.protocol}://{self.hostname}'
+        self.url = f'{self.protocol}://{self.domain}'
 
 
 FAILED_REASON_TIMEOUT = 'Page.navigate timeout'
@@ -53,7 +53,8 @@ FAILED_REASON_LOADING = 'loading failed'
 class WebpageResult:
     def __init__(self, webpage):
         self.rank = webpage.rank
-        self.hostname = webpage.hostname
+        self.domain = webpage.domain
+        self.tld = get_tld(webpage.url)
         self.protocol = webpage.protocol
         self.url = webpage.url
 
@@ -134,18 +135,18 @@ class WebpageResult:
             file.write(base64.b64decode(screenshot))
 
     def _get_filename_for_screenshot(self, name):
-        return f'{self.rank}-{self.hostname}-{name}.png'
+        return f'{self.rank}-{self.domain}-{name}.png'
 
     def save_data(self, directory):
-        with open(f'{directory}/{self._get_filename_for_data()}', 'w') as file:
+        with open(f'{directory}/{self._get_filename_for_data()}', 'w', encoding='utf8') as file:
             file.write(self._to_json())
 
     def _get_filename_for_data(self):
-        return f'{self.rank}-{self.hostname}.json'
+        return f'{self.rank}-{self.domain}.json'
 
     def _to_json(self):
         results = {k: v for k, v in self.__dict__.items() if k not in self._json_excluded_fields}
-        return json.dumps(results, indent=4, default=lambda o: o.__dict__)
+        return json.dumps(results, indent=4, default=lambda o: o.__dict__, ensure_ascii=False)
 
     def exclude_field_from_json(self, excluded_field):
         self._json_excluded_fields.append(excluded_field)
@@ -348,7 +349,7 @@ class WebpageScanner:
         # find cookie notice by using AdblockPlus rules
         cookie_notice_rule_node_ids = set(self.find_cookie_notices_by_rules())
         cookie_notice_rule_node_ids = self._filter_visible_nodes(cookie_notice_rule_node_ids)
-        self.result.add_cookie_notices('rules', self.get_cookie_notice_data_of_nodes(cookie_notice_rule_node_ids))
+        self.result.add_cookie_notices('rules', self.get_cookie_notice_properties_of_nodes(cookie_notice_rule_node_ids))
 
         # find string `cookie` in nodes and store the closest parent block element
         cookie_node_ids = self.search_for_string('cookie')
@@ -359,12 +360,12 @@ class WebpageScanner:
         # find fixed parent nodes (i.e. having style `position: fixed`) with string `cookie`
         cookie_notice_fixed_node_ids = self.find_cookie_notices_by_fixed_parent(cookie_node_ids)
         cookie_notice_fixed_node_ids = self._filter_visible_nodes(cookie_notice_fixed_node_ids)
-        self.result.add_cookie_notices('fixed-parent', self.get_cookie_notice_data_of_nodes(cookie_notice_fixed_node_ids))
+        self.result.add_cookie_notices('fixed-parent', self.get_cookie_notice_properties_of_nodes(cookie_notice_fixed_node_ids))
 
         # find full-width parent nodes with string `cookie`
         cookie_notice_full_width_node_ids = self.find_cookie_notices_by_full_width_parent(cookie_node_ids)
         cookie_notice_full_width_node_ids = self._filter_visible_nodes(cookie_notice_full_width_node_ids)
-        self.result.add_cookie_notices('full-width-parent', self.get_cookie_notice_data_of_nodes(cookie_notice_full_width_node_ids))
+        self.result.add_cookie_notices('full-width-parent', self.get_cookie_notice_properties_of_nodes(cookie_notice_full_width_node_ids))
 
         # triple mutex
         #with lock_l:
@@ -378,141 +379,63 @@ class WebpageScanner:
         self.take_screenshots_of_visible_nodes(cookie_notice_fixed_node_ids, 'fixed-parent')
         self.take_screenshots_of_visible_nodes(cookie_notice_full_width_node_ids, 'full-width-parent')
 
-    def get_cookie_notice_data_of_nodes(self, node_ids):
-        return [{
-                'html': self.get_html(node_id),
-                'width': self.get_width(node_id),
-                'height': self.get_height(node_id),
-                'x': self.get_x(node_id),
-                'y': self.get_y(node_id),
-            } for node_id in node_ids]
+    def get_cookie_notice_properties_of_nodes(self, node_ids):
+        return [self._get_cookie_notice_properties(node_id) for node_id in node_ids]
+
+    def _get_cookie_notice_properties(self, node_id):
+        js_function = """
+            function getCookieNoticeProperties(elem) {
+                if (!elem) elem = this;
+                const style = getComputedStyle(elem);
+
+                function parseValue(value) {
+                    parsedValue = parseInt(value);
+                    if (isNaN(parseValue)) {
+                        return 0;
+                    } else {
+                        return parseValue;
+                    }
+                }
+
+                let width = elem.clientWidth + parseValue(style.borderLeftWidth) + parseValue(style.borderRightWidth);
+                if (width === document.documentElement.clientWidth) {
+                    width = 'full';
+                }
+                let height = elem.clientHeight + parseValue(style.borderTopWidth) + parseValue(style.borderBottomWidth);
+                if (height === document.documentElement.clientHeight) {
+                    height = 'full';
+                }
+
+                return {
+                    'html': elem.outerHTML,
+                    'text': elem.innerText,
+                    'width': width,
+                    'height': height,
+                    'x': elem.getBoundingClientRect().top,
+                    'y': elem.getBoundingClientRect().left,
+                };
+            }"""
+
+        try:
+            remote_object_id = self._get_remote_object_id_for_node_id(node_id)
+            complete_result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
+            object_result = self.tab.Runtime.getProperties(objectId=complete_result.get('objectId'), ownProperties=True).get('result')
+            return {
+                    object_attribute.get('name'): object_attribute.get('value').get('value')
+                    for object_attribute in object_result
+                    if object_attribute.get('name') != '__proto__'
+                }
+        except pychrome.exceptions.CallMethodException as e:
+            self.result.add_warning({
+                'message': str(e),
+                'exception': type(e).__name__,
+                'traceback': traceback.format_exc().splitlines(),
+                'method': '_get_cookie_notice_properties',
+            })
+            return dict.fromkeys(['html', 'text', 'width', 'height', 'x', 'y'])
 
     def get_html(self, node_id):
         return self.tab.DOM.getOuterHTML(nodeId=node_id).get('outerHTML')
-
-    def get_width(self, node_id):
-        """Returns the width of the visible (child) node or `full` if it takes the full width of the window."""
-
-        js_function = """
-            function getWidth(elem) {
-                function parseValue(value) {
-                    parsedValue = parseInt(value);
-                    if (isNaN(parseValue)) {
-                        return 0;
-                    }
-                    else {
-                        return parseValue;
-                    }
-                }
-
-                if (!elem) elem = this;
-                const style = getComputedStyle(elem);
-                width = elem.clientWidth + parseValue(style.borderLeftWidth) + parseValue(style.borderRightWidth);
-
-                if (width === document.documentElement.clientWidth) {
-                    return 'full';
-                }
-                else {
-                    return width;
-                }
-            }"""
-
-        try:
-            visible_node_id = self.is_node_visible(node_id).get('visible_node')
-            remote_object_id = self._get_remote_object_id_for_node_id(visible_node_id)
-            result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
-            return result.get('value')
-        except pychrome.exceptions.CallMethodException as e:
-            self.result.add_warning({
-                'message': str(e),
-                'exception': type(e).__name__,
-                'traceback': traceback.format_exc().splitlines(),
-                'method': 'get_width',
-            })
-            return None
-
-    def get_height(self, node_id):
-        """Returns the height of the visible (child) node or `full` if it takes the full height of the window."""
-
-        js_function = """
-            function getHeight(elem) {
-                function parseValue(value) {
-                    parsedValue = parseInt(value);
-                    if (isNaN(parseValue)) {
-                        return 0;
-                    }
-                    else {
-                        return parseValue;
-                    }
-                }
-
-                if (!elem) elem = this;
-                const style = getComputedStyle(elem);
-                height = elem.clientHeight + parseValue(style.borderTopWidth) + parseValue(style.borderBottomWidth);
-
-                if (height === document.documentElement.clientHeight) {
-                    return 'full';
-                }
-                else {
-                    return height;
-                }
-            }"""
-
-        try:
-            visible_node_id = self.is_node_visible(node_id).get('visible_node')
-            remote_object_id = self._get_remote_object_id_for_node_id(visible_node_id)
-            result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
-            return result.get('value')
-        except pychrome.exceptions.CallMethodException as e:
-            self.result.add_warning({
-                'message': str(e),
-                'exception': type(e).__name__,
-                'traceback': traceback.format_exc().splitlines(),
-                'method': 'get_height',
-            })
-            return None
-
-    def get_x(self, node_id):
-        js_function = """
-            function getX(elem) {
-                if (!elem) elem = this;
-                return elem.getBoundingClientRect().top;
-            }"""
-
-        try:
-            visible_node_id = self.is_node_visible(node_id).get('visible_node')
-            remote_object_id = self._get_remote_object_id_for_node_id(visible_node_id)
-            result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
-            return result.get('value')
-        except pychrome.exceptions.CallMethodException as e:
-            self.result.add_warning({
-                'message': str(e),
-                'exception': type(e).__name__,
-                'traceback': traceback.format_exc().splitlines(),
-                'method': 'get_x',
-            })
-            return None
-
-    def get_y(self, node_id):
-        js_function = """
-            function getY(elem) {
-                if (!elem) elem = this;
-                return elem.getBoundingClientRect().left;
-            }"""
-
-        try:
-            visible_node_id = self.is_node_visible(node_id).get('visible_node')
-            remote_object_id = self._get_remote_object_id_for_node_id(visible_node_id)
-            result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
-            return result.get('value')
-        except pychrome.exceptions.CallMethodException as e:
-            self.result.add_warning({
-                'message': str(e),
-                'exception': type(e).__name__,
-                'traceback': traceback.format_exc().splitlines(),
-                'method': 'get_y',
-            })
-            return None
 
     def detect_language(self):
         try:
@@ -781,7 +704,7 @@ class WebpageScanner:
         `I DON'T CARE ABOUT COOKIES`.
         See: https://www.i-dont-care-about-cookies.eu/
         """
-        rules = [rule.selector.get('value') for rule in self.abp_filter.get_applicable_rules(self.webpage.hostname)]
+        rules = [rule.selector.get('value') for rule in self.abp_filter.get_applicable_rules(self.webpage.domain)]
         rules_js = json.dumps(rules)
 
         js_function = """
@@ -1089,12 +1012,12 @@ class AdblockPlusFilter:
             # other type is url-pattern which is used to block script files
             self._rules = [rule for rule in parse_filterlist(filterlist) if isinstance(rule, Filter) and rule.selector.get('type') == 'css']
 
-    def get_applicable_rules(self, hostname):
-        """Returns the rules of the filter that are applicable for the given hostname."""
-        return [rule for rule in self._rules if self._is_rule_applicable(rule, hostname)]
+    def get_applicable_rules(self, domain):
+        """Returns the rules of the filter that are applicable for the given domain."""
+        return [rule for rule in self._rules if self._is_rule_applicable(rule, domain)]
 
-    def _is_rule_applicable(self, rule, hostname):
-        """Tests whethere a given rule is applicable for the given hostname."""
+    def _is_rule_applicable(self, rule, domain):
+        """Tests whethere a given rule is applicable for the given domain."""
         domain_options = [(key, value) for key, value in rule.options if key == 'domain']
         if len(domain_options) == 0:
             return True
@@ -1112,7 +1035,7 @@ class AdblockPlusFilter:
         # the list of domains now only consists of domains for which the rule 
         # is applicable, we check for the domain and return False otherwise
         for opt_domain, _ in domains:
-            if opt_domain in hostname:
+            if opt_domain in domain:
                 return True
         return False
 
@@ -1184,7 +1107,7 @@ if __name__ == '__main__':
 
     # scan the pages in parallel
     for rank, domain in enumerate(domains, start=1):
-        webpage = Webpage(rank=rank, hostname=domain)
+        webpage = Webpage(rank=rank, domain=domain)
         pool.apply_async(f_scan_page, args=(webpage,), callback=f_page_scanned)
 
     # close pool
