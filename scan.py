@@ -411,8 +411,8 @@ class WebpageScanner:
                     'text': elem.innerText,
                     'width': width,
                     'height': height,
-                    'x': elem.getBoundingClientRect().top,
-                    'y': elem.getBoundingClientRect().left,
+                    'x': elem.getBoundingClientRect().left,
+                    'y': elem.getBoundingClientRect().top,
                 };
             }"""
 
