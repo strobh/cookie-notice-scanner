@@ -7,16 +7,17 @@ import multiprocessing as mp
 import os
 import subprocess
 import traceback
-from enum import Enum
 from functools import partial
 from multiprocessing import Lock
 from urllib.parse import urlparse
 
 import pychrome
+import tld.exceptions
 from abp.filters import parse_filterlist
 from abp.filters.parser import Filter
 from langdetect import detect
 from pprint import pprint
+from tld import get_fld
 from tranco import Tranco
 
 
@@ -151,6 +152,7 @@ class WebpageCrawler:
         self.abp_filter = abp_filter
         self.webpage = webpage
         self.result = WebpageResult(webpage)
+        self.loaded_urls = []
 
     def get_result(self):
         return self.result
@@ -164,20 +166,21 @@ class WebpageCrawler:
 
         # setup the tab
         self._setup_tab()
+        self.tab.wait(0.1)
         self.requestId = None
+
+        # deny permissions because they might pop-up and block detection
+        self._deny_permissions()
         
         try:
-            # deny notifications because they might pop-up and block detection
-            self._deny_permission('notifications', self.webpage.hostname)
-
             # open url: triple mutex
             lock_n.acquire()
             with lock_m:
                 lock_n.release()
-                self._delete_all_cookies()
+                self._clear_browser()
                 self.tab.Page.bringToFront()
                 self.tab.Page.navigate(url=self.webpage.url, _timeout=15)
-                self.tab.wait(1)
+                #self.tab.wait(1)
 
             # we wait for our load event to be fired (see `_event_load_event_fired`)
             waited = 0
@@ -200,19 +203,28 @@ class WebpageCrawler:
             with lock_m:
                 lock_n.release()
                 self.tab.Page.bringToFront()
-                self.tab.wait(3)
+                #self.tab.wait(3)
 
             # get root node of document, is needed to be sure that the DOM is loaded
             self.root_node = self.tab.DOM.getDocument().get('root')
 
             # detect cookie notices
             self.detect_cookie_notices()
+
+            # get cookies
+            self.result.set_cookies('all', self._get_all_cookies())
         except pychrome.exceptions.TimeoutException as e:
             self.result.set_failed(FAILED_REASON_TIMEOUT, type(e).__name__)
         except Exception as e:
             self.result.set_failed(str(e), type(e).__name__, traceback.format_exc())
 
-        # stop and close the tab
+        # stop the browser from executing javascript
+        self.tab.Emulation.setScriptExecutionDisabled(value=True)
+        self.tab.wait(0.1)
+
+        # clear the browser and stop the tab
+        self._clear_browser()
+        self.tab.wait(0.1)
         self.tab.stop()
 
         return self.result
@@ -263,6 +275,8 @@ class WebpageCrawler:
         This includes the originating request which resulted in the
         response being received.
         """
+        self.loaded_urls.append(response['url'])
+
         url = response['url']
         mime_type = response['mimeType']
         status = response['status']
@@ -290,13 +304,18 @@ class WebpageCrawler:
         else:
             self.tab.Page.handleJavaScriptDialog(accept=False)
 
-    def _deny_permission(self, permission, hostname):
-        self._set_permission(permission, 'denied', 'https://' + hostname + '/*')
-        self._set_permission(permission, 'denied', 'https://www.' + hostname + '/*')
+    def _deny_permissions(self):
+        self._deny_permission('notifications')
+        self._deny_permission('geolocation')
+        self._deny_permission('camera')
+        self._deny_permission('microphone')
 
-    def _set_permission(self, permission, value, url):
+    def _deny_permission(self, permission):
+        self._set_permission(permission, 'denied')
+
+    def _set_permission(self, permission, value):
         permission_descriptor = {'name': permission}
-        self.tab.Browser.setPermission(origin=url, permission=permission_descriptor, setting=value)
+        self.tab.Browser.setPermission(permission=permission_descriptor, setting=value)
 
     def detect_cookie_notices(self):
         global lock_m, lock_n, lock_l
@@ -342,13 +361,8 @@ class WebpageCrawler:
                 self.tab.wait(1)
                 self.take_screenshot('original')
                 self.take_screenshots_of_visible_nodes(cookie_notice_rule_node_ids, 'rules')
-                #self.take_screenshots_of_visible_nodes(cookie_node_ids, 'cookie-string')
                 self.take_screenshots_of_visible_nodes(cookie_notice_fixed_node_ids, 'fixed-parent')
                 self.take_screenshots_of_visible_nodes(cookie_notice_full_width_node_ids, 'full-width-parent')
-
-        # get cookies and delete them afterwards
-        #self.result.set_cookies('all', self._get_all_cookies())
-        self._delete_all_cookies()
 
     def get_cookie_notice_data_of_nodes(self, node_ids):
         return [{
@@ -839,8 +853,23 @@ class WebpageCrawler:
     def _get_all_cookies(self):
         return self.tab.Network.getAllCookies().get('cookies')
 
-    def _delete_all_cookies(self):
+    def _clear_browser(self):
+        """Clears cache, cookies, local storage, etc. of the browser."""
+        self.tab.Network.clearBrowserCache()
         self.tab.Network.clearBrowserCookies()
+
+        # store all domains that were requested
+        first_level_domains = set()
+        for loaded_url in self.loaded_urls:
+            try:
+                first_level_domain = get_fld(loaded_url)
+                first_level_domains.add(first_level_domain)
+            except tld.exceptions.TldBadUrl as e:
+                pass
+
+        # clear the data for each domain
+        for first_level_domain in first_level_domains:
+            self.tab.Storage.clearDataForOrigin(origin='.' + first_level_domain, storageTypes='all')
 
     def _get_root_frame_id(self):
         return self.tab.Page.getFrameTree().get('frameTree').get('frame').get('id')
@@ -983,7 +1012,7 @@ if __name__ == '__main__':
     lock_l = Lock()
 
     # create multiprocessor pool: twelve tabs are processed in parallel at most
-    pool = mp.Pool(12)
+    pool = mp.Pool(1)
 
     # create the browser and a helper function to crawl pages
     browser = Browser(abp_filter_filename='resources/cookie-notice-css-rules.txt')
@@ -996,7 +1025,7 @@ if __name__ == '__main__':
     # this is a callback function that is called when crawling a page finished
     def f_page_crawled(result):
         # cookies are not correct if pages are crawled in parallel
-        result.exclude_field_from_json('cookies')
+        #result.exclude_field_from_json('cookies')
 
         # save results and screenshots
         result.save_data(RESULTS_DIRECTORY)

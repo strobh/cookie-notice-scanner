@@ -1,7 +1,7 @@
 {
     "_meta": {
         "hash": {
-            "sha256": "2a99efa0593e1bf4f72d5909c4a3d097399d12228c455b4be332d0948f0f404a"
+            "sha256": "585067543677ee3acde38a581ab1e9db9a202f16e9250ec53717bcddc4ddb330"
         },
         "pipfile-spec": 6,
         "requires": {
@@ -86,6 +86,18 @@
                 "sha256:8f3cd2e254d8f793e7f3d6d9df77b92252b52637291d0f0da013c76ea2724b6c"
             ],
             "version": "==1.14.0"
+        },
+        "tld": {
+            "hashes": [
+                "sha256:670f30e23ed35a7f9ee459801950e49b02554477d4d3e72cd2d92d39b2267470",
+                "sha256:72c7170f68ade92a07be43b363afc8e42a98ffa3700d899a984fdbeedb339bac",
+                "sha256:a31d333253cc3033999ad5e6a2a34e9453bf9ac700de82da5f1e7487e4acbdaa",
+                "sha256:d13fe1171c8d9d383ce822c50915d35ba52c3b78fb7caacb10035230e2e113f7",
+                "sha256:f466c6eb96e7dbc51817d2dbc9a832e78b0cad6661740334016a79bfdb1477b1",
+                "sha256:fc8267ee1d78ba02b8970199af0c0efb4624ac3e2177e50cbf05916bd5df8b12"
+            ],
+            "index": "pypi",
+            "version": "==0.11.11"
         },
         "tranco": {
             "hashes": [

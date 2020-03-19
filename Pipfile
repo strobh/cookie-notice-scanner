@@ -11,6 +11,7 @@ pprint = "*"
 python-abp = "*"
 tranco = "*"
 langdetect = "*"
+tld = "*"
 
 [requires]
 python_version = "3.7"
