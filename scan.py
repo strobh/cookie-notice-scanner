@@ -559,11 +559,11 @@ class WebpageScanner:
                 }
 
                 let width = elem.offsetWidth;
-                if (width === document.documentElement.clientWidth) {
+                if (width >= document.documentElement.clientWidth) {
                     width = 'full';
                 }
                 let height = elem.offsetHeight;
-                if (height === document.documentElement.clientHeight) {
+                if (height >= document.documentElement.clientHeight) {
                     height = 'full';
                 }
 
@@ -673,7 +673,6 @@ class WebpageScanner:
             }"""
 
         try:
-            # call the function `findClosestBlockElement` on the node
             remote_object_id = self._get_remote_object_id_by_node_id(node_id)
             result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
             return self._get_node_id_for_remote_object(result.get('objectId'))
@@ -878,7 +877,7 @@ class WebpageScanner:
 
 
     ############################################################################
-    # COOKIE NOTICE DETECTION: FULL WIDTH PARENT
+    # COOKIE NOTICE DETECTION: RULES
     ############################################################################
 
     def find_cookie_notices_by_rules(self):
@@ -932,19 +931,18 @@ class WebpageScanner:
             function findClickablesInElement(elem) {
                 function findCoveringNodes(nodes) {
                     let covering_nodes = Array.from(nodes);
-                    nodes.forEach(
-                        function(node1) {
-                            nodes.forEach(
-                                function(node2) {
-                                    // check whether node2 is contained if node2, if yes remove
-                                    if (node1 !== node2 && node1.contains(node2)) {
-                                        const index = covering_nodes.indexOf(node2);
-                                        covering_nodes.splice(index, 1);
-                                    }
-                                }
-                            );
+
+                    for (var i = 0; i < nodes.length; i++) {
+                        let node1 = nodes[i];
+                        for (var j = 0; j < nodes.length; j++) {
+                            let node2 = nodes[j];
+                            // check whether node2 is contained in node1, if yes remove
+                            if (node1 !== node2 && node1.contains(node2)) {
+                                const index = covering_nodes.indexOf(node2);
+                                covering_nodes.splice(index, 1);
+                            }
                         }
-                    );
+                    }
                     return covering_nodes;
                 }
 
@@ -1026,8 +1024,8 @@ class WebpageScanner:
         js_function = """
             function isVisible(elem) {
                 if (!elem) elem = this;
-                let visible = true;
                 if (!(elem instanceof Element)) return false;
+                let visible = true;
                 const style = getComputedStyle(elem);
 
                 // for these rules the childs cannot be visible, directly return
@@ -1053,7 +1051,7 @@ class WebpageScanner:
                 if (elemCenter.y < 0) visible = false;
                 if (elemCenter.y > (document.documentElement.clientHeight || window.innerHeight)) visible = false;
 
-                if (visible === true) {
+                if (visible) {
                     let pointContainer = document.elementFromPoint(elemCenter.x, elemCenter.y);
                     do {
                         if (pointContainer === elem) return elem;
