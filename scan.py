@@ -491,13 +491,71 @@ class WebpageScanner:
                 if (!elem) elem = this;
                 const style = getComputedStyle(elem);
 
-                function parseValue(value) {
-                    parsedValue = parseInt(value);
-                    if (isNaN(parseValue)) {
-                        return 0;
-                    } else {
-                        return parseValue;
+                // Source: https://codereview.stackexchange.com/a/141854
+                function powerset(l) {
+                    return (function ps(list) {
+                        if (list.length === 0) {
+                            return [[]];
+                        }
+                        var head = list.pop();
+                        var tailPS = ps(list);
+                        return tailPS.concat(tailPS.map(function(e) { return [head].concat(e); }));
+                    })(l.slice());
+                }
+
+                function getUniqueClassCombinations(elem) {
+                    let result = [];
+                    let classCombinations = powerset(Array.from(elem.classList));
+                    for (var i = 0; i < classCombinations.length; i++) {
+                        let classCombination = classCombinations[i];
+                        if (classCombination.length == 0) {
+                            continue;
+                        }
+                        if (document.getElementsByClassName(classCombination.join(' ')).length == 1) {
+                            result.push(classCombination.join(' '));
+                        }
                     }
+                    return result;
+                }
+
+                function getUniqueAttributeCombinations(elem) {
+                    function removeFromArray(array, item) {
+                        const index = array.indexOf(item);
+                        if (index > -1) {
+                            array.splice(index, 1);
+                        }
+                    }
+
+                    let attributes = Array.from(elem.attributes);
+                    let attributeNames = [];
+                    for (var i = 0; i < attributes.length; i++) {
+                        let attributeName = attributes[i].localName;
+                        if (attributeName == 'id' || attributeName == 'class' || attributeName == 'style') {
+                            continue;
+                        }
+                        attributeNames.push(attributeName);
+                    }
+
+                    let result = [];
+                    let attributeCombinations = powerset(attributeNames);
+                    for (var i = 0; i < attributeCombinations.length; i++) {
+                        let attributeCombination = attributeCombinations[i];
+                        if (attributeCombination.length == 0) {
+                            continue;
+                        }
+
+                        let selector = '';
+                        for (var j = 0; j < attributeCombination.length; j++) {
+                            let attributeName = attributeCombination[j];
+                            let attributeValue = elem.getAttribute(attributeName);
+                            selector += '[' + attributeName + '="' + attributeValue.replace(/"/g, '\\\\"') + '"]';
+                        }
+                        console.log(selector);
+                        if (document.querySelectorAll(selector).length == 1) {
+                            result.push(attributeCombination.join(' '));
+                        }
+                    }
+                    return result;
                 }
 
                 let width = elem.offsetWidth;
@@ -513,6 +571,8 @@ class WebpageScanner:
                     'html': elem.outerHTML,
                     'hasId': elem.hasAttribute('id'),
                     'hasClass': elem.hasAttribute('class'),
+                    'uniqueClassCombinations': getUniqueClassCombinations(elem),
+                    'uniqueAttributeCombinations': getUniqueAttributeCombinations(elem),
                     'id': elem.getAttribute('id'),
                     'class': Array.from(elem.classList),
                     'text': elem.innerText,
@@ -540,7 +600,10 @@ class WebpageScanner:
                 'traceback': traceback.format_exc().splitlines(),
                 'method': '_get_cookie_notice_properties',
             })
-            return dict.fromkeys(['html', 'hasId', 'hasClass', 'id', 'class', 'text', 'fontSize', 'width', 'height', 'x', 'y'])
+            return dict.fromkeys([
+                    'html', 'hasId', 'hasClass', 'uniqueClassCombinations',
+                    'uniqueAttributeCombinations', 'id', 'class', 'text',
+                    'fontSize', 'width', 'height', 'x', 'y'])
 
 
     ############################################################################
