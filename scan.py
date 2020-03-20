@@ -511,7 +511,12 @@ class WebpageScanner:
 
                 return {
                     'html': elem.outerHTML,
+                    'hasId': elem.hasAttribute('id'),
+                    'hasClass': elem.hasAttribute('class'),
+                    'id': elem.getAttribute('id'),
+                    'class': Array.from(elem.classList),
                     'text': elem.innerText,
+                    'fontSize': style.fontSize,
                     'width': width,
                     'height': height,
                     'x': elem.getBoundingClientRect().left,
@@ -535,7 +540,7 @@ class WebpageScanner:
                 'traceback': traceback.format_exc().splitlines(),
                 'method': '_get_cookie_notice_properties',
             })
-            return dict.fromkeys(['html', 'text', 'width', 'height', 'x', 'y'])
+            return dict.fromkeys(['html', 'hasId', 'hasClass', 'id', 'class', 'text', 'fontSize', 'width', 'height', 'x', 'y'])
 
 
     ############################################################################
@@ -906,6 +911,8 @@ class WebpageScanner:
             function getPropertiesOfClickable(elem) {
                 if (!elem) elem = this;
 
+                const style = getComputedStyle(elem);
+
                 let clickable_type;
                 if (elem.localName == 'a' || elem.getAttribute('role') == 'link') {
                     clickable_type = 'link';
@@ -915,10 +922,11 @@ class WebpageScanner:
 
                 return {
                     'html': elem.outerHTML,
-                    'text': elem.innerText,
-                    'value': elem.getAttribute('value'),
                     'node': elem.localName,
                     'type': clickable_type,
+                    'text': elem.innerText,
+                    'value': elem.getAttribute('value'),
+                    'fontSize': style.fontSize,
                     'width': elem.offsetWidth,
                     'height': elem.offsetHeight,
                     'x': elem.getBoundingClientRect().left,
@@ -937,7 +945,7 @@ class WebpageScanner:
                 'traceback': traceback.format_exc().splitlines(),
                 'method': '_get_cookie_notice_properties',
             })
-            return dict.fromkeys(['html', 'text', 'node', 'type', 'width', 'height', 'x', 'y'])
+            return dict.fromkeys(['html', 'node', 'type', 'text', 'value', 'fontSize', 'width', 'height', 'x', 'y'])
 
 
     ############################################################################
@@ -1106,11 +1114,51 @@ class WebpageScanner:
 
     def _get_object_for_remote_object(self, remote_object_id):
         object_attributes = self._get_properties_of_remote_object(remote_object_id)
-        return {
+        result = {
                 attribute.get('name'): attribute.get('value').get('value')
                 for attribute in object_attributes
-                if attribute.get('name') != '__proto__'
+                if self._is_remote_attribute_a_primitive(attribute)
             }
+
+        # search for nested objects
+        result.update({
+                attribute.get('name'): self._get_object_for_remote_object(attribute.get('value').get('objectId'))
+                for attribute in object_attributes
+                if self._is_remote_attribute_an_object(attribute)
+            })
+
+        # search for nested arrays
+        result.update({
+                attribute.get('name'): self._get_array_for_remote_object(attribute.get('value').get('objectId'))
+                for attribute in object_attributes
+                if self._is_remote_attribute_an_array(attribute)
+            })
+
+        return result
+
+    def _get_array_for_remote_object(self, remote_object_id):
+        array_attributes = self._get_properties_of_remote_object(remote_object_id)
+        return [
+                array_element.get('value').get('value')
+                for array_element in array_attributes
+                if array_element.get('enumerable')
+            ]
+
+    def _is_remote_attribute_a_primitive(self, attribute):
+        return attribute.get('enumerable') \
+               and attribute.get('value').get('type') != 'object' \
+               or attribute.get('value').get('subtype', '') == 'null'
+
+    def _is_remote_attribute_an_object(self, attribute):
+        return attribute.get('enumerable') \
+               and attribute.get('value').get('type') == 'object' \
+               and attribute.get('value').get('subtype', '') != 'array' \
+               and attribute.get('value').get('subtype', '') != 'null'
+
+    def _is_remote_attribute_an_array(self, attribute):
+        return attribute.get('enumerable') \
+               and attribute.get('value').get('type') == 'object' \
+               and attribute.get('value').get('subtype', '') == 'array'
 
     def _get_properties_of_remote_object(self, remote_object_id):
         return self.tab.Runtime.getProperties(objectId=remote_object_id, ownProperties=True).get('result')
