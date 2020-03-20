@@ -27,6 +27,11 @@ from tranco import Tranco
 # even further and find a fixed or full-width parent there
 
 
+FAILED_REASON_TIMEOUT = 'Page.navigate timeout'
+FAILED_REASON_STATUS_CODE = 'status code'
+FAILED_REASON_LOADING = 'loading failed'
+
+
 class Webpage:
     def __init__(self, rank=None, domain='', protocol='https'):
         self.rank = rank
@@ -43,11 +48,6 @@ class Webpage:
 
     def remove_subdomain(self):
         self.url = f'{self.protocol}://{self.domain}'
-
-
-FAILED_REASON_TIMEOUT = 'Page.navigate timeout'
-FAILED_REASON_STATUS_CODE = 'status code'
-FAILED_REASON_LOADING = 'loading failed'
 
 
 class WebpageResult:
@@ -152,6 +152,92 @@ class WebpageResult:
         self._json_excluded_fields.append(excluded_field)
 
 
+class Browser:
+    def __init__(self, abp_filter_filename, debugger_url='http://127.0.0.1:9222'):
+        # create a browser instance which controls chromium
+        self.browser = pychrome.Browser(url=debugger_url)
+
+        # create helpers
+        self.abp_filter = AdblockPlusFilter(abp_filter_filename)
+
+    def scan_page(self, webpage):
+        """Tries to scan the webpage and returns the result of the scan.
+
+        Following possibilities are tried to scan the page:
+        - https protocol without `www.` subdomain
+        - https protocol with `www.` subdomain
+        - http protocol without `www.` subdomain
+        - http protocol with `www.` subdomain
+
+        The first scan whose result is not failed is returned.
+        """
+        result = self._scan_page(webpage)
+
+        # try https with subdomain www
+        if result.failed and (result.failed_reason == FAILED_REASON_LOADING or result.failed_reason == FAILED_REASON_TIMEOUT):
+            webpage.set_subdomain('www')
+            result = self._scan_page(webpage)
+        # try http without subdomain www
+        if result.failed and (result.failed_reason == FAILED_REASON_LOADING or result.failed_reason == FAILED_REASON_TIMEOUT):
+            webpage.remove_subdomain()
+            webpage.set_protocol('http')
+            result = self._scan_page(webpage)
+        # try http with www subdomain
+        if result.failed and (result.failed_reason == FAILED_REASON_LOADING or result.failed_reason == FAILED_REASON_TIMEOUT):
+            webpage.set_subdomain('www')
+            result = self._scan_page(webpage)
+
+        return result
+
+    def _scan_page(self, webpage):
+        """Creates tab, scans webpage and returns result."""
+        tab = self.browser.new_tab()
+
+        # scan the page
+        page_scanner = WebpageScanner(tab=tab, abp_filter=self.abp_filter, webpage=webpage)
+        page_scanner.scan()
+
+        # close tab and obtain the results
+        self.browser.close_tab(tab)
+        return page_scanner.get_result()
+
+
+class AdblockPlusFilter:
+    def __init__(self, rules_filename):
+        with open(rules_filename) as filterlist:
+            # we only need filters with type css
+            # other instances are Header, Metadata, etc.
+            # other type is url-pattern which is used to block script files
+            self._rules = [rule for rule in parse_filterlist(filterlist) if isinstance(rule, Filter) and rule.selector.get('type') == 'css']
+
+    def get_applicable_rules(self, domain):
+        """Returns the rules of the filter that are applicable for the given domain."""
+        return [rule for rule in self._rules if self._is_rule_applicable(rule, domain)]
+
+    def _is_rule_applicable(self, rule, domain):
+        """Tests whethere a given rule is applicable for the given domain."""
+        domain_options = [(key, value) for key, value in rule.options if key == 'domain']
+        if len(domain_options) == 0:
+            return True
+
+        # there is only one domain option
+        _, domains = domain_options[0]
+
+        # filter exclusion rules as they should be ignored:
+        # the cookie notices do exist, the ABP plugin is just not able
+        # to remove them correctly
+        domains = [(opt_domain, opt_applicable) for opt_domain, opt_applicable in domains if opt_applicable == True]
+        if len(domains) == 0:
+            return True
+
+        # the list of domains now only consists of domains for which the rule
+        # is applicable, we check for the domain and return False otherwise
+        for opt_domain, _ in domains:
+            if opt_domain in domain:
+                return True
+        return False
+
+
 class WebpageScanner:
     def __init__(self, tab, abp_filter, webpage):
         self.tab = tab
@@ -160,12 +246,7 @@ class WebpageScanner:
         self.result = WebpageResult(webpage)
         self.loaded_urls = []
 
-    def get_result(self):
-        return self.result
-
     def scan(self):
-        global lock_m, lock_n, lock_l
-
         # initialize `_is_loaded` variable to `False`
         # it will be set to `True` when the `loadEventFired` event occurs
         self._is_loaded = False
@@ -179,38 +260,17 @@ class WebpageScanner:
         self._deny_permissions()
         
         try:
-            # open url: triple mutex
-            #lock_n.acquire()
-            #with lock_m:
-            #    lock_n.release()
+            # open url
             self._clear_browser()
             self.tab.Page.bringToFront()
             self.tab.Page.navigate(url=self.webpage.url, _timeout=15)
-            #self.tab.wait(1)
-
-            # we wait for our load event to be fired (see `_event_load_event_fired`)
-            waited = 0
-            while not self._is_loaded and waited < 30:
-                self.tab.wait(0.1)
-                waited += 0.1
-
-            if waited >= 30:
-                self.result.set_stopped_waiting('load event')
-                self.tab.Page.stopLoading()
 
             # return if failed to load page
             if self.result.failed:
                 return self.result
 
-            # wait for JavaScript code to be run, after the page has been loaded
-            self.tab.wait(5)
-
-            # bring to front: triple mutex
-            #lock_n.acquire()
-            #with lock_m:
-            #    lock_n.release()
-            #    self.tab.Page.bringToFront()
-            #    self.tab.wait(3)
+            # we wait for load event and JavaScript
+            self._wait_for_load_event_and_js()
 
             # get root node of document, is needed to be sure that the DOM is loaded
             self.root_node = self.tab.DOM.getDocument().get('root')
@@ -243,6 +303,14 @@ class WebpageScanner:
 
         return self.result
 
+    def get_result(self):
+        return self.result
+
+
+    ############################################################################
+    # SETUP
+    ############################################################################
+
     def _setup_tab(self):
         # set callbacks for request and response logging
         self.tab.Network.requestWillBeSent = self._event_request_will_be_sent
@@ -266,6 +334,57 @@ class WebpageScanner:
         self.tab.DOM.enable()
         self.tab.Runtime.enable()
         self.tab.Overlay.enable()
+
+    def _clear_browser(self):
+        """Clears cache, cookies, local storage, etc. of the browser."""
+        self.tab.Network.clearBrowserCache()
+        self.tab.Network.clearBrowserCookies()
+
+        # store all domains that were requested
+        first_level_domains = set()
+        for loaded_url in self.loaded_urls:
+            # invalid urls raise an exception
+            try:
+                first_level_domain = get_fld(loaded_url)
+                first_level_domains.add(first_level_domain)
+            except Exception:
+                pass
+
+        # clear the data for each domain
+        for first_level_domain in first_level_domains:
+            self.tab.Storage.clearDataForOrigin(origin='.' + first_level_domain, storageTypes='all')
+
+    def _deny_permissions(self):
+        self._deny_permission('notifications')
+        self._deny_permission('geolocation')
+        self._deny_permission('camera')
+        self._deny_permission('microphone')
+
+    def _deny_permission(self, permission):
+        self._set_permission(permission, 'denied')
+
+    def _set_permission(self, permission, value):
+        permission_descriptor = {'name': permission}
+        self.tab.Browser.setPermission(permission=permission_descriptor, setting=value)
+
+    def _wait_for_load_event_and_js(self, load_event_timeout=30, js_timeout=5):
+        # we wait for the load event to be fired (see `_event_load_event_fired`)
+        waited = 0
+        while not self._is_loaded and waited < load_event_timeout:
+            self.tab.wait(0.1)
+            waited += 0.1
+
+        if waited >= load_event_timeout:
+            self.result.set_stopped_waiting('load event')
+            self.tab.Page.stopLoading()
+
+        # wait for JavaScript code to be run, after the page has been loaded
+        self.tab.wait(js_timeout)
+
+
+    ############################################################################
+    # EVENTS
+    ############################################################################
 
     def _event_request_will_be_sent(self, request, requestId, **kwargs):
         """Will be called when a request is about to be sent.
@@ -318,24 +437,14 @@ class WebpageScanner:
         else:
             self.tab.Page.handleJavaScriptDialog(accept=False)
 
-    def _deny_permissions(self):
-        self._deny_permission('notifications')
-        self._deny_permission('geolocation')
-        self._deny_permission('camera')
-        self._deny_permission('microphone')
 
-    def _deny_permission(self, permission):
-        self._set_permission(permission, 'denied')
-
-    def _set_permission(self, permission, value):
-        permission_descriptor = {'name': permission}
-        self.tab.Browser.setPermission(permission=permission_descriptor, setting=value)
+    ############################################################################
+    # COOKIE NOTICES
+    ############################################################################
 
     def detect_cookie_notices(self):
-        global lock_m, lock_n, lock_l
-
         # store html of page
-        self.result.set_html(self.get_html(self.root_node.get('nodeId')))
+        self.result.set_html(self._get_html_of_node(self.root_node.get('nodeId')))
 
         # check whether language is english or german
         lang = self.detect_language()
@@ -349,7 +458,7 @@ class WebpageScanner:
         # find cookie notice by using AdblockPlus rules
         cookie_notice_rule_node_ids = set(self.find_cookie_notices_by_rules())
         cookie_notice_rule_node_ids = self._filter_visible_nodes(cookie_notice_rule_node_ids)
-        self.result.add_cookie_notices('rules', self.get_cookie_notice_properties_of_nodes(cookie_notice_rule_node_ids))
+        self.result.add_cookie_notices('rules', self.get_properties_of_cookie_notices(cookie_notice_rule_node_ids))
 
         # find string `cookie` in nodes and store the closest parent block element
         cookie_node_ids = self.search_for_string('cookie')
@@ -360,29 +469,23 @@ class WebpageScanner:
         # find fixed parent nodes (i.e. having style `position: fixed`) with string `cookie`
         cookie_notice_fixed_node_ids = self.find_cookie_notices_by_fixed_parent(cookie_node_ids)
         cookie_notice_fixed_node_ids = self._filter_visible_nodes(cookie_notice_fixed_node_ids)
-        self.result.add_cookie_notices('fixed-parent', self.get_cookie_notice_properties_of_nodes(cookie_notice_fixed_node_ids))
+        self.result.add_cookie_notices('fixed-parent', self.get_properties_of_cookie_notices(cookie_notice_fixed_node_ids))
 
         # find full-width parent nodes with string `cookie`
         cookie_notice_full_width_node_ids = self.find_cookie_notices_by_full_width_parent(cookie_node_ids)
         cookie_notice_full_width_node_ids = self._filter_visible_nodes(cookie_notice_full_width_node_ids)
-        self.result.add_cookie_notices('full-width-parent', self.get_cookie_notice_properties_of_nodes(cookie_notice_full_width_node_ids))
+        self.result.add_cookie_notices('full-width-parent', self.get_properties_of_cookie_notices(cookie_notice_full_width_node_ids))
 
-        # triple mutex
-        #with lock_l:
-        #    lock_n.acquire()
-        #    with lock_m:
-        #        lock_n.release()
         self.tab.Page.bringToFront()
-        #self.tab.wait(1)
         self.take_screenshot('original')
         self.take_screenshots_of_visible_nodes(cookie_notice_rule_node_ids, 'rules')
         self.take_screenshots_of_visible_nodes(cookie_notice_fixed_node_ids, 'fixed-parent')
         self.take_screenshots_of_visible_nodes(cookie_notice_full_width_node_ids, 'full-width-parent')
 
-    def get_cookie_notice_properties_of_nodes(self, node_ids):
-        return [self._get_cookie_notice_properties(node_id) for node_id in node_ids]
+    def get_properties_of_cookie_notices(self, node_ids):
+        return [self._get_properties_of_cookie_notice(node_id) for node_id in node_ids]
 
-    def _get_cookie_notice_properties(self, node_id):
+    def _get_properties_of_cookie_notice(self, node_id):
         js_function = """
             function getCookieNoticeProperties(elem) {
                 if (!elem) elem = this;
@@ -397,11 +500,11 @@ class WebpageScanner:
                     }
                 }
 
-                let width = elem.clientWidth + parseValue(style.borderLeftWidth) + parseValue(style.borderRightWidth);
+                let width = elem.offsetWidth;
                 if (width === document.documentElement.clientWidth) {
                     width = 'full';
                 }
-                let height = elem.clientHeight + parseValue(style.borderTopWidth) + parseValue(style.borderBottomWidth);
+                let height = elem.offsetHeight;
                 if (height === document.documentElement.clientHeight) {
                     height = 'full';
                 }
@@ -417,15 +520,13 @@ class WebpageScanner:
             }"""
 
         try:
+            clickables = self.find_clickables_in_node(node_id)
+            clickables_properties = self.get_properties_of_clickables(clickables)
+
             remote_object_id = self._get_remote_object_id_by_node_id(node_id)
             complete_result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
-            object_result = self.tab.Runtime.getProperties(objectId=complete_result.get('objectId'), ownProperties=True).get('result')
-            cookie_notice_properties = {
-                    object_attribute.get('name'): object_attribute.get('value').get('value')
-                    for object_attribute in object_result
-                    if object_attribute.get('name') != '__proto__'
-                }
-            cookie_notice_properties['clickables'] = self.get_clickables_properties_of_cookie_notice(node_id)
+            cookie_notice_properties = self._get_object_for_remote_object(complete_result.get('objectId'))
+            cookie_notice_properties['clickables'] = clickables_properties
             return cookie_notice_properties
         except pychrome.exceptions.CallMethodException as e:
             self.result.add_warning({
@@ -436,15 +537,10 @@ class WebpageScanner:
             })
             return dict.fromkeys(['html', 'text', 'width', 'height', 'x', 'y'])
 
-    def get_clickables_properties_of_cookie_notice(self, node_id):
-        clickable_nodes = self.find_clickables_in_node(node_id)
-        return [{
-                'html': self.get_html(clickable_node),
-                'name': self._get_node_name(clickable_node),
-            } for clickable_node in clickable_nodes]
 
-    def get_html(self, node_id):
-        return self.tab.DOM.getOuterHTML(nodeId=node_id).get('outerHTML')
+    ############################################################################
+    # GENERAL
+    ############################################################################
 
     def detect_language(self):
         try:
@@ -494,10 +590,6 @@ class WebpageScanner:
     def find_parent_block_element(self, node_id):
         """Returns the nearest parent block element or the element itself if it is a block element."""
 
-        # if the node is a block element, just return it again
-        if not self._is_inline_element(node_id):
-            return node_id
-
         js_function = """
             function findClosestBlockElement(elem) {
                 function isInlineElement(elem) {
@@ -516,7 +608,7 @@ class WebpageScanner:
             # call the function `findClosestBlockElement` on the node
             remote_object_id = self._get_remote_object_id_by_node_id(node_id)
             result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
-            return self._get_node_id_by_remote_object_id(result.get('objectId'))
+            return self._get_node_id_for_remote_object(result.get('objectId'))
         except pychrome.exceptions.CallMethodException as e:
             self.result.add_warning({
                 'message': str(e),
@@ -526,15 +618,20 @@ class WebpageScanner:
             })
             return None
 
+
+    ############################################################################
+    # COOKIE NOTICE DETECTION: FULL WIDTH PARENT
+    ############################################################################
+
     def find_cookie_notices_by_full_width_parent(self, cookie_node_ids):
         cookie_notice_full_width_node_ids = set()
         for node_id in cookie_node_ids:
-            fwp_result = self.find_full_width_parent(node_id)
+            fwp_result = self._find_full_width_parent(node_id)
             if fwp_result.get('parent_node_exists'):
                 cookie_notice_full_width_node_ids.add(fwp_result.get('parent_node'))
         return cookie_notice_full_width_node_ids
 
-    def find_full_width_parent(self, node_id):
+    def _find_full_width_parent(self, node_id):
         js_function = """
             function findFullWidthParent(elem) {
                 function parseValue(value) {
@@ -627,29 +724,34 @@ class WebpageScanner:
             else:
                 return {
                     'parent_node_exists': True,
-                    'parent_node': self._get_node_id_by_remote_object_id(result.get('objectId')),
+                    'parent_node': self._get_node_id_for_remote_object(result.get('objectId')),
                 }
         except pychrome.exceptions.CallMethodException as e:
             self.result.add_warning({
                 'message': str(e),
                 'exception': type(e).__name__,
                 'traceback': traceback.format_exc().splitlines(),
-                'method': 'find_full_width_parent',
+                'method': '_find_full_width_parent',
             })
             return {
                 'parent_node_exists': False,
                 'parent_node': None,
             }
 
+
+    ############################################################################
+    # COOKIE NOTICE DETECTION: FIXED PARENT
+    ############################################################################
+
     def find_cookie_notices_by_fixed_parent(self, cookie_node_ids):
         cookie_notice_fixed_node_ids = set()
         for node_id in cookie_node_ids:
-            fp_result = self.find_fixed_parent(node_id)
+            fp_result = self._find_fixed_parent(node_id)
             if fp_result.get('has_fixed_parent'):
                 cookie_notice_fixed_node_ids.add(fp_result.get('fixed_parent'))
         return cookie_notice_fixed_node_ids
 
-    def find_fixed_parent(self, node_id):
+    def _find_fixed_parent(self, node_id):
         js_function = """
             function findFixedParent(elem) {
                 if (!elem) elem = this;
@@ -666,7 +768,7 @@ class WebpageScanner:
         try:
             remote_object_id = self._get_remote_object_id_by_node_id(node_id)
             result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
-            result_node_id = self._get_node_id_by_remote_object_id(result.get('objectId'))
+            result_node_id = self._get_node_id_for_remote_object(result.get('objectId'))
 
             # if the returned parent element is an html element,
             # no fixed parent element was found
@@ -699,12 +801,17 @@ class WebpageScanner:
                 'message': str(e),
                 'exception': type(e).__name__,
                 'traceback': traceback.format_exc().splitlines(),
-                'method': 'find_fixed_parent',
+                'method': '_find_fixed_parent',
             })
             return {
                 'has_fixed_parent': False,
                 'fixed_parent': None,
             }
+
+
+    ############################################################################
+    # COOKIE NOTICE DETECTION: FULL WIDTH PARENT
+    ############################################################################
 
     def find_cookie_notices_by_rules(self):
         """Returns the node ids of the found cookie notices.
@@ -732,12 +839,22 @@ class WebpageScanner:
             })();"""
 
         query_result = self.tab.Runtime.evaluate(expression=js_function).get('result')
-        return self._get_array_of_node_ids_by_remote_array(query_result.get('objectId'))
+        return self._get_array_of_node_ids_for_remote_object(query_result.get('objectId'))
+
+
+    ############################################################################
+    # COOKIE NOTICE DETECTION: CMP
+    ############################################################################
 
     def is_cmp_function_defined(self):
         """Checks whether the function `__cmp` is defined on the JavaScript `window` object."""
         result = self.tab.Runtime.evaluate(expression="typeof window.__cmp !== 'undefined'").get('result')
         return result.get('value')
+
+
+    ############################################################################
+    # CLICKABLES
+    ############################################################################
 
     def find_clickables_in_node(self, node_id):
         # getEventListeners()
@@ -771,7 +888,7 @@ class WebpageScanner:
         try:
             remote_object_id = self._get_remote_object_id_by_node_id(node_id)
             query_result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
-            return self._get_array_of_node_ids_by_remote_array(query_result.get('objectId'))
+            return self._get_array_of_node_ids_for_remote_object(query_result.get('objectId'))
         except pychrome.exceptions.CallMethodException as e:
             self.result.add_warning({
                 'message': str(e),
@@ -780,6 +897,55 @@ class WebpageScanner:
                 'method': 'find_clickables_in_node',
             })
             return []
+
+    def get_properties_of_clickables(self, node_ids):
+        return [self._get_properties_of_clickable(node_id) for node_id in node_ids]
+
+    def _get_properties_of_clickable(self, node_id):
+        js_function = """
+            function getPropertiesOfClickable(elem) {
+                if (!elem) elem = this;
+
+                let clickable_type;
+                if (elem.localName == 'a' || elem.getAttribute('role') == 'link') {
+                    clickable_type = 'link';
+                } else {
+                    clickable_type = 'button';
+                }
+
+                return {
+                    'html': elem.outerHTML,
+                    'text': elem.innerText,
+                    'value': elem.getAttribute('value'),
+                    'node': elem.localName,
+                    'type': clickable_type,
+                    'width': elem.offsetWidth,
+                    'height': elem.offsetHeight,
+                    'x': elem.getBoundingClientRect().left,
+                    'y': elem.getBoundingClientRect().top,
+                };
+            }"""
+
+        try:
+            remote_object_id = self._get_remote_object_id_by_node_id(node_id)
+            complete_result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
+            return self._get_object_for_remote_object(complete_result.get('objectId'))
+        except pychrome.exceptions.CallMethodException as e:
+            self.result.add_warning({
+                'message': str(e),
+                'exception': type(e).__name__,
+                'traceback': traceback.format_exc().splitlines(),
+                'method': '_get_cookie_notice_properties',
+            })
+            return dict.fromkeys(['html', 'text', 'node', 'type', 'width', 'height', 'x', 'y'])
+
+
+    ############################################################################
+    # NODE VISIBILITY
+    ############################################################################
+
+    def _filter_visible_nodes(self, node_ids):
+        return [node_id for node_id in node_ids if self.is_node_visible(node_id).get('is_visible')]
 
     def is_node_visible(self, node_id):
         # Source: https://stackoverflow.com/a/41698614
@@ -857,7 +1023,7 @@ class WebpageScanner:
             else:
                 return {
                     'is_visible': True,
-                    'visible_node': self._get_node_id_by_remote_object_id(result.get('objectId')),
+                    'visible_node': self._get_node_id_for_remote_object(result.get('objectId')),
                 }
         except pychrome.exceptions.CallMethodException as e:
             self.result.add_warning({
@@ -870,6 +1036,11 @@ class WebpageScanner:
                 'is_visible': False,
                 'visible_node': None,
             }
+
+
+    ############################################################################
+    # SCREENSHOTS
+    ############################################################################
 
     def take_screenshots_of_visible_nodes(self, node_ids, name):
         # filter only visible nodes
@@ -909,63 +1080,57 @@ class WebpageScanner:
     def _hide_highlight(self):
         self.tab.Overlay.hideHighlight()
 
-    def _scroll_down(self, delta_y):
-        self.tab.Input.emulateTouchFromMouseEvent(type="mouseWheel", x=1, y=1, button="none", deltaX=0, deltaY=-1*delta_y)
-        self.tab.wait(0.1)
 
-    def _get_all_cookies(self):
-        return self.tab.Network.getAllCookies().get('cookies')
+    ############################################################################
+    # REMOTE OBJECTS
+    ############################################################################
 
-    def _clear_browser(self):
-        """Clears cache, cookies, local storage, etc. of the browser."""
-        self.tab.Network.clearBrowserCache()
-        self.tab.Network.clearBrowserCookies()
-
-        # store all domains that were requested
-        first_level_domains = set()
-        for loaded_url in self.loaded_urls:
-            # invalid urls raise an exception
-            try:
-                first_level_domain = get_fld(loaded_url)
-                first_level_domains.add(first_level_domain)
-            except Exception:
-                pass
-
-        # clear the data for each domain
-        for first_level_domain in first_level_domains:
-            self.tab.Storage.clearDataForOrigin(origin='.' + first_level_domain, storageTypes='all')
-
-    def _get_root_frame_id(self):
-        return self.tab.Page.getFrameTree().get('frameTree').get('frame').get('id')
-
-    def _get_node_id_by_remote_object_id(self, remote_object_id):
+    def _get_node_id_for_remote_object(self, remote_object_id):
         return self.tab.DOM.requestNode(objectId=remote_object_id).get('nodeId')
 
-    def _get_array_of_node_ids_by_remote_array(self, remote_object_id):
-        array_result = self.tab.Runtime.getProperties(objectId=remote_object_id, ownProperties=True).get('result')
-        remote_object_ids = [array_element.get('value').get('objectId') for array_element in array_result if array_element.get('enumerable')]
+    def _get_array_of_node_ids_for_remote_object(self, remote_object_id):
+        array_attributes = self._get_properties_of_remote_object(remote_object_id)
+        remote_object_ids = [array_element.get('value').get('objectId') for array_element in array_attributes if array_element.get('enumerable')]
         node_ids = []
         for remote_object_id in remote_object_ids:
             try:
-                node_ids.append(self._get_node_id_by_remote_object_id(remote_object_id))
+                node_ids.append(self._get_node_id_for_remote_object(remote_object_id))
             except pychrome.exceptions.CallMethodException as e:
                 self.result.add_warning({
                     'message': str(e),
                     'exception': type(e).__name__,
                     'traceback': traceback.format_exc().splitlines(),
-                    'method': '_get_array_of_node_ids_by_remote_array',
+                    'method': '_get_array_of_node_ids_for_remote_object',
                 })
         return node_ids
 
+    def _get_object_for_remote_object(self, remote_object_id):
+        object_attributes = self._get_properties_of_remote_object(remote_object_id)
+        return {
+                attribute.get('name'): attribute.get('value').get('value')
+                for attribute in object_attributes
+                if attribute.get('name') != '__proto__'
+            }
+
+    def _get_properties_of_remote_object(self, remote_object_id):
+        return self.tab.Runtime.getProperties(objectId=remote_object_id, ownProperties=True).get('result')
+
     def _get_remote_object_id_by_node_id(self, node_id):
         try:
-            remote_object_id = self.tab.DOM.resolveNode(nodeId=node_id).get('object').get('objectId')
+            return self.tab.DOM.resolveNode(nodeId=node_id).get('object').get('objectId')
         except Exception:
-            remote_object_id = None
-        return remote_object_id
+            return None
 
-    def _filter_visible_nodes(self, node_ids):
-        return [node_id for node_id in node_ids if self.is_node_visible(node_id).get('is_visible')]
+
+    ############################################################################
+    # NODE DATA
+    ############################################################################
+
+    def _get_root_frame_id(self):
+        return self.tab.Page.getFrameTree().get('frameTree').get('frame').get('id')
+
+    def _get_html_of_node(self, node_id):
+        return self.tab.DOM.getOuterHTML(nodeId=node_id).get('outerHTML')
 
     def _get_node_name(self, node_id):
         try:
@@ -996,96 +1161,16 @@ class WebpageScanner:
         return self._get_node_name(node_id) in inline_elements
 
 
-class Browser:
-    def __init__(self, abp_filter_filename, debugger_url='http://127.0.0.1:9222'):
-        # create a browser instance which controls chromium
-        self.browser = pychrome.Browser(url=debugger_url)
+    ############################################################################
+    # MISC
+    ############################################################################
 
-        # create helpers
-        self.abp_filter = AdblockPlusFilter(abp_filter_filename)
+    def _scroll_down(self, delta_y):
+        self.tab.Input.emulateTouchFromMouseEvent(type="mouseWheel", x=1, y=1, button="none", deltaX=0, deltaY=-1*delta_y)
+        self.tab.wait(0.1)
 
-    def scan_page(self, webpage):
-        """Tries to scan the webpage and returns the result of the scan.
-
-        Following possibilities are tried to scan the page:
-        - https protocol without `www.` subdomain
-        - https protocol with `www.` subdomain
-        - http protocol without `www.` subdomain
-        - http protocol with `www.` subdomain
-
-        The first scan whose result is not failed is returned.
-        """
-        result = self._scan_page(webpage)
-
-        # try https with subdomain www
-        if result.failed and (result.failed_reason == FAILED_REASON_LOADING or result.failed_reason == FAILED_REASON_TIMEOUT):
-            webpage.set_subdomain('www')
-            result = self._scan_page(webpage)
-        # try http without subdomain www
-        if result.failed and (result.failed_reason == FAILED_REASON_LOADING or result.failed_reason == FAILED_REASON_TIMEOUT):
-            webpage.remove_subdomain()
-            webpage.set_protocol('http')
-            result = self._scan_page(webpage)
-        # try http with www subdomain
-        if result.failed and (result.failed_reason == FAILED_REASON_LOADING or result.failed_reason == FAILED_REASON_TIMEOUT):
-            webpage.set_subdomain('www')
-            result = self._scan_page(webpage)
-
-        return result
-
-    def _scan_page(self, webpage):
-        """Creates tab, scans webpage and returns result."""
-        global lock_m, lock_n, lock_l
-
-        # triple mutex
-        #lock_n.acquire()
-        #with lock_m:
-        #    lock_n.release()
-        tab = self.browser.new_tab()
-
-        # scan the page
-        page_scanner = WebpageScanner(tab=tab, abp_filter=self.abp_filter, webpage=webpage)
-        page_scanner.scan()
-
-        # close tab and obtain the results
-        self.browser.close_tab(tab)
-        return page_scanner.get_result()
-
-
-class AdblockPlusFilter:
-    def __init__(self, rules_filename):
-        with open(rules_filename) as filterlist:
-            # we only need filters with type css
-            # other instances are Header, Metadata, etc.
-            # other type is url-pattern which is used to block script files
-            self._rules = [rule for rule in parse_filterlist(filterlist) if isinstance(rule, Filter) and rule.selector.get('type') == 'css']
-
-    def get_applicable_rules(self, domain):
-        """Returns the rules of the filter that are applicable for the given domain."""
-        return [rule for rule in self._rules if self._is_rule_applicable(rule, domain)]
-
-    def _is_rule_applicable(self, rule, domain):
-        """Tests whethere a given rule is applicable for the given domain."""
-        domain_options = [(key, value) for key, value in rule.options if key == 'domain']
-        if len(domain_options) == 0:
-            return True
-
-        # there is only one domain option
-        _, domains = domain_options[0]
-
-        # filter exclusion rules as they should be ignored:
-        # the cookie notices do exist, the ABP plugin is just not able 
-        # to remove them correctly
-        domains = [(opt_domain, opt_applicable) for opt_domain, opt_applicable in domains if opt_applicable == True]
-        if len(domains) == 0:
-            return True
-
-        # the list of domains now only consists of domains for which the rule 
-        # is applicable, we check for the domain and return False otherwise
-        for opt_domain, _ in domains:
-            if opt_domain in domain:
-                return True
-        return False
+    def _get_all_cookies(self):
+        return self.tab.Network.getAllCookies().get('cookies')
 
 
 if __name__ == '__main__':
@@ -1114,13 +1199,6 @@ if __name__ == '__main__':
         domains = []
         with open('resources/sampled-domains.txt') as f:
             domains = [line.strip() for line in f]
-
-    # triple mutex:
-    # https://stackoverflow.com/a/11673600
-    # https://stackoverflow.com/a/28721419
-    lock_m = Lock()
-    lock_n = Lock()
-    lock_l = Lock()
 
     # create multiprocessor pool:
     # currently only one tab is processed at a time -> not parallel
