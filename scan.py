@@ -473,18 +473,18 @@ class WebpageScanner:
         # find fixed parent nodes (i.e. having style `position: fixed`) with string `cookie`
         cookie_notice_fixed_node_ids = self.find_cookie_notices_by_fixed_parent(cookie_node_ids)
         cookie_notice_fixed_node_ids = self._filter_visible_nodes(cookie_notice_fixed_node_ids)
-        self.result.add_cookie_notices('fixed-parent', self.get_properties_of_cookie_notices(cookie_notice_fixed_node_ids))
+        self.result.add_cookie_notices('fixed_parent', self.get_properties_of_cookie_notices(cookie_notice_fixed_node_ids))
 
         # find full-width parent nodes with string `cookie`
         cookie_notice_full_width_node_ids = self.find_cookie_notices_by_full_width_parent(cookie_node_ids)
         cookie_notice_full_width_node_ids = self._filter_visible_nodes(cookie_notice_full_width_node_ids)
-        self.result.add_cookie_notices('full-width-parent', self.get_properties_of_cookie_notices(cookie_notice_full_width_node_ids))
+        self.result.add_cookie_notices('full_width_parent', self.get_properties_of_cookie_notices(cookie_notice_full_width_node_ids))
 
         self.tab.Page.bringToFront()
         self.take_screenshot('original')
         self.take_screenshots_of_visible_nodes(cookie_notice_rule_node_ids, 'rules')
-        self.take_screenshots_of_visible_nodes(cookie_notice_fixed_node_ids, 'fixed-parent')
-        self.take_screenshots_of_visible_nodes(cookie_notice_full_width_node_ids, 'full-width-parent')
+        self.take_screenshots_of_visible_nodes(cookie_notice_fixed_node_ids, 'fixed_parent')
+        self.take_screenshots_of_visible_nodes(cookie_notice_full_width_node_ids, 'full_width_parent')
 
     def get_properties_of_cookie_notices(self, node_ids):
         return [self._get_properties_of_cookie_notice(node_id) for node_id in node_ids]
@@ -573,14 +573,14 @@ class WebpageScanner:
 
                 return {
                     'html': elem.outerHTML,
-                    'hasId': elem.hasAttribute('id'),
-                    'hasClass': elem.hasAttribute('class'),
-                    'uniqueClassCombinations': getUniqueClassCombinations(elem),
-                    'uniqueAttributeCombinations': getUniqueAttributeCombinations(elem),
+                    'has_id': elem.hasAttribute('id'),
+                    'has_class': elem.hasAttribute('class'),
+                    'unique_class_combinations': getUniqueClassCombinations(elem),
+                    'unique_attribute_combinations': getUniqueAttributeCombinations(elem),
                     'id': elem.getAttribute('id'),
                     'class': Array.from(elem.classList),
                     'text': elem.innerText,
-                    'fontSize': style.fontSize,
+                    'fontsize': style.fontSize,
                     'width': width,
                     'height': height,
                     'x': elem.getBoundingClientRect().left,
@@ -605,9 +605,9 @@ class WebpageScanner:
                 'method': '_get_cookie_notice_properties',
             })
             return dict.fromkeys([
-                    'html', 'hasId', 'hasClass', 'uniqueClassCombinations',
-                    'uniqueAttributeCombinations', 'id', 'class', 'text',
-                    'fontSize', 'width', 'height', 'x', 'y'])
+                    'html', 'has_id', 'has_class', 'unique_class_combinations',
+                    'unique_attribute_combinations', 'id', 'class', 'text',
+                    'fontsize', 'width', 'height', 'x', 'y'])
 
 
     ############################################################################
@@ -991,7 +991,7 @@ class WebpageScanner:
                     'type': clickable_type,
                     'text': elem.innerText,
                     'value': elem.getAttribute('value'),
-                    'fontSize': style.fontSize,
+                    'fontsize': style.fontSize,
                     'width': elem.offsetWidth,
                     'height': elem.offsetHeight,
                     'x': elem.getBoundingClientRect().left,
@@ -1002,7 +1002,9 @@ class WebpageScanner:
         try:
             remote_object_id = self._get_remote_object_id_by_node_id(node_id)
             result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
-            return self._get_object_for_remote_object(result.get('objectId'))
+            properties_of_clickable = self._get_object_for_remote_object(result.get('objectId'))
+            properties_of_clickable['is_visible'] = self.is_node_visible(node_id).get('is_visible')
+            return properties_of_clickable
         except pychrome.exceptions.CallMethodException as e:
             self.result.add_warning({
                 'message': str(e),
@@ -1010,7 +1012,27 @@ class WebpageScanner:
                 'traceback': traceback.format_exc().splitlines(),
                 'method': '_get_cookie_notice_properties',
             })
-            return dict.fromkeys(['html', 'node', 'type', 'text', 'value', 'fontSize', 'width', 'height', 'x', 'y'])
+            return dict.fromkeys(['html', 'node', 'type', 'text', 'value', 'fontsize', 'width', 'height', 'x', 'y', 'is_visible'])
+
+    def _click_node(self, node_id):
+        js_function = """
+            function clickNode(elem) {
+                if (!elem) elem = this;
+                elem.click();
+            }"""
+
+        try:
+            remote_object_id = self._get_remote_object_id_by_node_id(node_id)
+            self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
+            return True
+        except pychrome.exceptions.CallMethodException as e:
+            self.result.add_warning({
+                'message': str(e),
+                'exception': type(e).__name__,
+                'traceback': traceback.format_exc().splitlines(),
+                'method': '_click_node',
+            })
+            return False
 
 
     ############################################################################
