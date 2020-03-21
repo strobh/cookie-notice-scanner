@@ -272,6 +272,10 @@ class WebpageScanner:
             # we wait for load event and JavaScript
             self._wait_for_load_event_and_js()
 
+            # return if failed to load page
+            if self.result.failed:
+                return self.result
+
             # get root node of document, is needed to be sure that the DOM is loaded
             self.root_node = self.tab.DOM.getDocument().get('root')
 
@@ -589,8 +593,8 @@ class WebpageScanner:
             clickables_properties = self.get_properties_of_clickables(clickables)
 
             remote_object_id = self._get_remote_object_id_by_node_id(node_id)
-            complete_result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
-            cookie_notice_properties = self._get_object_for_remote_object(complete_result.get('objectId'))
+            result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
+            cookie_notice_properties = self._get_object_for_remote_object(result.get('objectId'))
             cookie_notice_properties['clickables'] = clickables_properties
             return cookie_notice_properties
         except pychrome.exceptions.CallMethodException as e:
@@ -953,8 +957,8 @@ class WebpageScanner:
 
         try:
             remote_object_id = self._get_remote_object_id_by_node_id(node_id)
-            query_result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
-            return self._get_array_of_node_ids_for_remote_object(query_result.get('objectId'))
+            result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
+            return self._get_array_of_node_ids_for_remote_object(result.get('objectId'))
         except pychrome.exceptions.CallMethodException as e:
             self.result.add_warning({
                 'message': str(e),
@@ -997,8 +1001,8 @@ class WebpageScanner:
 
         try:
             remote_object_id = self._get_remote_object_id_by_node_id(node_id)
-            complete_result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
-            return self._get_object_for_remote_object(complete_result.get('objectId'))
+            result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
+            return self._get_object_for_remote_object(result.get('objectId'))
         except pychrome.exceptions.CallMethodException as e:
             self.result.add_warning({
                 'message': str(e),
