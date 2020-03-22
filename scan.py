@@ -83,9 +83,10 @@ class WebpageResult:
 
         self._json_excluded_fields = ['_json_excluded_fields', 'screenshots']
 
-    def add_redirect(self, url):
+    def add_redirect(self, url, root_frame=True):
         self.redirects.append({
-                'url': url
+                'url': url,
+                'root_frame': root_frame
             })
 
     def set_failed(self, reason, exception=None, traceback=None):
@@ -175,9 +176,10 @@ class ClickResult:
     def set_cookies(self, key, cookies):
         self.cookies[key] = cookies
 
-    def add_new_page(self, url):
+    def add_new_page(self, url, root_frame=True):
         self.new_pages.append({
-                'url': url
+                'url': url,
+                'root_frame': root_frame
             })
 
     def has_new_pages(self):
@@ -195,7 +197,7 @@ class Browser:
         # create helpers
         self.abp_filter = AdblockPlusFilter(abp_filter_filename)
 
-    def scan_page(self, webpage, click=False):
+    def scan_page(self, webpage, do_click=False):
         """Tries to scan the webpage and returns the result of the scan.
 
         Following possibilities are tried to scan the page:
@@ -222,19 +224,33 @@ class Browser:
             webpage.set_subdomain('www')
             result = self._scan_page(webpage).get_result()
 
-        if result.failed or not click:
+        if result.failed:
             return result
+
+        # do the click and add the click results to the web page result
+        if do_click:
+            self.do_click(webpage, result)
+        return result
+
+    def do_click(self, webpage, result):
+        # store click results for nodes to avoid duplicates
+        click_results = {}
 
         # click each element and add the click result to the webpage result
         for detection_technique, cookie_notices in result.cookie_notices.items():
             for cookie_notice_index, cookie_notice in enumerate(cookie_notices):
                 for clickable_index, clickable in enumerate(cookie_notice.get('clickables')):
-                    click = Click(detection_technique, cookie_notice_index, clickable_index)
-                    click_result = self._scan_page(webpage=webpage, take_screenshots=False, click=click)
-                    clickable['click_result'] = click_result.get_click_result()
-                    pprint(click_result.get_result()._to_json())
-
-        return result
+                    # check whether click was already done
+                    if clickable.get('node_id') in click_results:
+                        clickable['click_result'] = click_results.get(clickable.get('node_id'))
+                    else:
+                        # create click instruction
+                        click = Click(detection_technique, cookie_notice_index, clickable_index)
+                        # do click on web page
+                        click_result = self._scan_page(webpage=webpage, take_screenshots=False, click=click).get_click_result()
+                        # store results
+                        clickable['click_result'] = click_result
+                        click_results[clickable.get('node_id')] = click_result
 
     def _scan_page(self, webpage, take_screenshots=True, click=None):
         """Creates tab, scans webpage and returns result."""
@@ -356,7 +372,9 @@ class WebpageScanner:
         # data about requests/repsonses
         self.recordRedirects = True
         self.recordNewPagesForClick = False
+        self.waitForNavigatedEvent = False
         self.requestId = None
+        self.frameId = None
 
         # setup the tab
         self._setup_tab()
@@ -371,6 +389,7 @@ class WebpageScanner:
         self.tab.Network.responseReceived = self._event_response_received
         self.tab.Network.loadingFailed = self._event_loading_failed
         self.tab.Page.loadEventFired = self._event_load_event_fired
+        self.tab.Page.frameStartedLoading = self._event_frame_started_loading
         self.tab.Page.navigatedWithinDocument = self._event_navigated_within_document
         self.tab.Page.windowOpen = self._event_window_open
         self.tab.Page.javascriptDialogOpening = self._event_javascript_dialog_opening
@@ -440,6 +459,12 @@ class WebpageScanner:
         self.tab.Browser.setPermission(permission=permission_descriptor, setting=value)
 
     def _wait_for_load_event_and_js(self, load_event_timeout=30, js_timeout=5):
+        self._wait_for_load_event(load_event_timeout)
+
+        # wait for JavaScript code to be run, after the page has been loaded
+        self.tab.wait(js_timeout)
+
+    def _wait_for_load_event(self, load_event_timeout):
         # we wait for the load event to be fired (see `_event_load_event_fired`)
         waited = 0
         while not self._is_loaded and waited < load_event_timeout:
@@ -449,9 +474,6 @@ class WebpageScanner:
         if waited >= load_event_timeout:
             self.result.set_stopped_waiting('load event')
             self.tab.Page.stopLoading()
-
-        # wait for JavaScript code to be run, after the page has been loaded
-        self.tab.wait(js_timeout)
 
 
     ############################################################################
@@ -474,6 +496,9 @@ class WebpageScanner:
         if self.requestId == None:
             self.requestId = requestId
 
+        if self.frameId == None:
+            self.frameId = kwargs.get('frameId', False)
+
     def _event_response_received(self, response, requestId, **kwargs):
         """Will be called when a response is received.
 
@@ -495,11 +520,17 @@ class WebpageScanner:
         if requestId == self.requestId:
             self.result.set_failed(FAILED_REASON_LOADING, errorText)
 
-    def _event_navigated_within_document(self, url, **kwargs):
+    def _event_frame_started_loading(self, frameId, **kwargs):
+        if self.recordNewPagesForClick and frameId == self.frameId:
+            self._is_loaded = False
+            self.waitForNavigatedEvent = True
+
+    def _event_navigated_within_document(self, url, frameId, **kwargs):
+        is_root_frame = (self.frameId == frameId)
         if self.recordRedirects:
-            self.result.add_redirect(url)
+            self.result.add_redirect(url, root_frame=is_root_frame)
         if self.recordNewPagesForClick:
-            self.click_result.add_new_page(url)
+            self.click_result.add_new_page(url, root_frame=is_root_frame)
 
     def _event_window_open(self, url, **kwargs):
         if self.recordNewPagesForClick:
@@ -540,8 +571,18 @@ class WebpageScanner:
                 clickable = clickables[click.clickable_index]
                 self.recordNewPagesForClick = True
                 self._click_node(clickable.get('node_id'))
-                is_cookie_notice_visible = self.is_node_visible(cookie_notice.get('node_id')).get('is_visible')
-                self.click_result.set_cookie_notice_visible_after_click(is_cookie_notice_visible)
+                self.tab.wait(1)
+
+                # if the frame started loading a new page, we wait
+                if self.waitForNavigatedEvent:
+                    self._wait_for_load_event(30)
+
+                # check whether cookie notice is still visible
+                if self._does_node_exist(cookie_notice.get('node_id')):
+                    is_cookie_notice_visible = self.is_node_visible(cookie_notice.get('node_id')).get('is_visible')
+                    self.click_result.set_cookie_notice_visible_after_click(is_cookie_notice_visible)
+                else:
+                    self.click_result.set_cookie_notice_visible_after_click(False)
 
         # get cookies
         self.click_result.set_cookies('after_click', self._get_all_cookies())
@@ -1362,6 +1403,13 @@ class WebpageScanner:
     # NODE DATA
     ############################################################################
 
+    def _does_node_exist(self, node_id):
+        try:
+            self.tab.DOM.describeNode(nodeId=node_id)
+            return True
+        except Exception:
+            return False
+
     def _get_root_frame_id(self):
         return self.tab.Page.getFrameTree().get('frameTree').get('frame').get('id')
 
@@ -1424,7 +1472,7 @@ if __name__ == '__main__':
     parser.add_argument('--results', dest='results_directory', nargs='?', default='results',
                         help='the directory to store the the results in ' +
                              '(default: `results`)')
-    parser.add_argument('--click', dest='do_click', nargs='?', default=False,
+    parser.add_argument('--click', dest='do_click', action="store_true",
                         help='whether all links and buttons in the detected cookie notices should be clicked or not ' +
                              '(default: false)')
 
