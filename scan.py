@@ -59,7 +59,6 @@ class WebpageResult:
         self.url = webpage.url
 
         self.redirects = []
-        self.new_pages = []
 
         self.failed = False
         self.failed_reason = None
@@ -88,14 +87,6 @@ class WebpageResult:
         self.redirects.append({
                 'url': url
             })
-
-    def add_new_page(self, url):
-        self.new_pages.append({
-                'url': url
-            })
-
-    def has_new_pages(self):
-        return len(self.new_pages) > 0
 
     def set_failed(self, reason, exception=None, traceback=None):
         self.failed = True
@@ -168,6 +159,34 @@ class WebpageResult:
         self._json_excluded_fields.append(excluded_field)
 
 
+class Click:
+    def __init__(self, detection_technique, cookie_notice_index, clickable_index):
+        self.detection_technique = detection_technique
+        self.cookie_notice_index = cookie_notice_index
+        self.clickable_index = clickable_index
+
+
+class ClickResult:
+    def __init__(self):
+        self.cookies = {}
+        self.new_pages = []
+        self.cookie_notice_visible_after_click = None
+
+    def set_cookies(self, key, cookies):
+        self.cookies[key] = cookies
+
+    def add_new_page(self, url):
+        self.new_pages.append({
+                'url': url
+            })
+
+    def has_new_pages(self):
+        return len(self.new_pages) > 0
+
+    def set_cookie_notice_visible_after_click(self, visible_after_click):
+        self.cookie_notice_visible_after_click = visible_after_click
+
+
 class Browser:
     def __init__(self, abp_filter_filename, debugger_url='http://127.0.0.1:9222'):
         # create a browser instance which controls chromium
@@ -176,7 +195,7 @@ class Browser:
         # create helpers
         self.abp_filter = AdblockPlusFilter(abp_filter_filename)
 
-    def scan_page(self, webpage):
+    def scan_page(self, webpage, click=False):
         """Tries to scan the webpage and returns the result of the scan.
 
         Following possibilities are tried to scan the page:
@@ -187,35 +206,47 @@ class Browser:
 
         The first scan whose result is not failed is returned.
         """
-        result = self._scan_page(webpage)
+        result = self._scan_page(webpage).get_result()
 
         # try https with subdomain www
         if result.failed and (result.failed_reason == FAILED_REASON_LOADING or result.failed_reason == FAILED_REASON_TIMEOUT):
             webpage.set_subdomain('www')
-            result = self._scan_page(webpage)
+            result = self._scan_page(webpage).get_result()
         # try http without subdomain www
         if result.failed and (result.failed_reason == FAILED_REASON_LOADING or result.failed_reason == FAILED_REASON_TIMEOUT):
             webpage.remove_subdomain()
             webpage.set_protocol('http')
-            result = self._scan_page(webpage)
+            result = self._scan_page(webpage).get_result()
         # try http with www subdomain
         if result.failed and (result.failed_reason == FAILED_REASON_LOADING or result.failed_reason == FAILED_REASON_TIMEOUT):
             webpage.set_subdomain('www')
-            result = self._scan_page(webpage)
+            result = self._scan_page(webpage).get_result()
+
+        if result.failed or not click:
+            return result
+
+        # click each element and add the click result to the webpage result
+        for detection_technique, cookie_notices in result.cookie_notices.items():
+            for cookie_notice_index, cookie_notice in enumerate(cookie_notices):
+                for clickable_index, clickable in enumerate(cookie_notice.get('clickables')):
+                    click = Click(detection_technique, cookie_notice_index, clickable_index)
+                    click_result = self._scan_page(webpage=webpage, take_screenshots=False, click=click)
+                    clickable['click_result'] = click_result.get_click_result()
+                    pprint(click_result.get_result()._to_json())
 
         return result
 
-    def _scan_page(self, webpage):
+    def _scan_page(self, webpage, take_screenshots=True, click=None):
         """Creates tab, scans webpage and returns result."""
         tab = self.browser.new_tab()
 
         # scan the page
         page_scanner = WebpageScanner(tab=tab, abp_filter=self.abp_filter, webpage=webpage)
-        page_scanner.scan()
+        page_scanner.scan(take_screenshots=take_screenshots, click=click)
 
         # close tab and obtain the results
         self.browser.close_tab(tab)
-        return page_scanner.get_result()
+        return page_scanner
 
 
 class AdblockPlusFilter:
@@ -260,9 +291,10 @@ class WebpageScanner:
         self.abp_filter = abp_filter
         self.webpage = webpage
         self.result = WebpageResult(webpage)
+        self.click_result = ClickResult()
         self.loaded_urls = []
 
-    def scan(self, take_screenshots=True):
+    def scan(self, take_screenshots=True, click=None):
         self._setup()
         
         try:
@@ -279,10 +311,13 @@ class WebpageScanner:
 
             # detect language and cookie notices
             self.detect_language()
-            self.detect_cookie_notices(take_screenshots)
+            self.detect_cookie_notices(take_screenshots=take_screenshots)
 
-            # get cookies
+            # get all cookies
             self.result.set_cookies('all', self._get_all_cookies())
+
+            # do the click if necessary
+            self.do_click(click)
         except Exception as e:
             self.result.set_failed(str(e), type(e).__name__, traceback.format_exc())
 
@@ -302,10 +337,11 @@ class WebpageScanner:
         # stop the tab
         self.tab.stop()
 
-        return self.result
-
     def get_result(self):
         return self.result
+
+    def get_click_result(self):
+        return self.click_result
 
 
     ############################################################################
@@ -313,7 +349,14 @@ class WebpageScanner:
     ############################################################################
 
     def _setup(self):
-        self._reset()
+        # initialize `_is_loaded` variable to `False`
+        # it will be set to `True` when the `loadEventFired` event occurs
+        self._is_loaded = False
+
+        # data about requests/repsonses
+        self.recordRedirects = True
+        self.recordNewPagesForClick = False
+        self.requestId = None
 
         # setup the tab
         self._setup_tab()
@@ -321,15 +364,6 @@ class WebpageScanner:
 
         # deny permissions because they might pop-up and block detection
         self._deny_permissions()
-
-    def _reset(self):
-        # initialize `_is_loaded` variable to `False`
-        # it will be set to `True` when the `loadEventFired` event occurs
-        self._is_loaded = False
-
-        # data about requests/repsonses
-        self.recordRedirects = True
-        self.requestId = None
 
     def _setup_tab(self):
         # set callbacks for request and response logging
@@ -464,11 +498,12 @@ class WebpageScanner:
     def _event_navigated_within_document(self, url, **kwargs):
         if self.recordRedirects:
             self.result.add_redirect(url)
-        else:
-            self.result.add_new_page(url)
+        if self.recordNewPagesForClick:
+            self.click_result.add_new_page(url)
 
     def _event_window_open(self, url, **kwargs):
-        self.result.add_new_page(url)
+        if self.recordNewPagesForClick:
+            self.click_result.add_new_page(url)
 
     def _event_load_event_fired(self, timestamp, **kwargs):
         """Will be called when the page sends an load event.
@@ -477,12 +512,39 @@ class WebpageScanner:
         page may still process some JavaScript.
         """
         self._is_loaded = True
+        self.recordRedirects = False
 
     def _event_javascript_dialog_opening(self, message, type, **kwargs):
         if type == 'alert':
             self.tab.Page.handleJavaScriptDialog(accept=True)
         else:
             self.tab.Page.handleJavaScriptDialog(accept=False)
+
+
+    ############################################################################
+    # RESULT FOR CLICK ON ELEMENT
+    ############################################################################
+
+    def do_click(self, click):
+        if not click:
+            return
+
+        # get cookies
+        self.click_result.set_cookies('before_click', self._get_all_cookies())
+
+        cookie_notices = self.result.cookie_notices.get(click.detection_technique, [])
+        if len(cookie_notices) > click.cookie_notice_index:
+            cookie_notice = cookie_notices[click.cookie_notice_index]
+            clickables = cookie_notice.get('clickables', [])
+            if len(clickables) > click.clickable_index:
+                clickable = clickables[click.clickable_index]
+                self.recordNewPagesForClick = True
+                self._click_node(clickable.get('node_id'))
+                is_cookie_notice_visible = self.is_node_visible(cookie_notice.get('node_id')).get('is_visible')
+                self.click_result.set_cookie_notice_visible_after_click(is_cookie_notice_visible)
+
+        # get cookies
+        self.click_result.set_cookies('after_click', self._get_all_cookies())
 
 
     ############################################################################
@@ -632,6 +694,7 @@ class WebpageScanner:
             remote_object_id = self._get_remote_object_id_by_node_id(node_id)
             result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
             cookie_notice_properties = self._get_object_for_remote_object(result.get('objectId'))
+            cookie_notice_properties['node_id'] = node_id
             cookie_notice_properties['clickables'] = clickables_properties
             return cookie_notice_properties
         except pychrome.exceptions.CallMethodException as e:
@@ -1040,6 +1103,7 @@ class WebpageScanner:
             remote_object_id = self._get_remote_object_id_by_node_id(node_id)
             result = self.tab.Runtime.callFunctionOn(functionDeclaration=js_function, objectId=remote_object_id, silent=True).get('result')
             properties_of_clickable = self._get_object_for_remote_object(result.get('objectId'))
+            properties_of_clickable['node_id'] = node_id
             properties_of_clickable['is_visible'] = self.is_node_visible(node_id).get('is_visible')
             return properties_of_clickable
         except pychrome.exceptions.CallMethodException as e:
@@ -1360,6 +1424,9 @@ if __name__ == '__main__':
     parser.add_argument('--results', dest='results_directory', nargs='?', default='results',
                         help='the directory to store the the results in ' +
                              '(default: `results`)')
+    parser.add_argument('--click', dest='do_click', nargs='?', default=False,
+                        help='whether all links and buttons in the detected cookie notices should be clicked or not ' +
+                             '(default: false)')
 
     # load the correct dataset
     args = parser.parse_args()
@@ -1406,7 +1473,7 @@ if __name__ == '__main__':
     # scan the pages in parallel
     for rank, domain in enumerate(domains, start=1):
         webpage = Webpage(rank=rank, domain=domain)
-        pool.apply_async(f_scan_page, args=(webpage,), callback=f_page_scanned)
+        pool.apply_async(f_scan_page, args=(webpage, args.do_click), callback=f_page_scanned)
 
     # close pool
     pool.close()
