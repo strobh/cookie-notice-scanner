@@ -58,6 +58,9 @@ class WebpageResult:
         self.protocol = webpage.protocol
         self.url = webpage.url
 
+        self.redirects = []
+        self.new_pages = []
+
         self.failed = False
         self.failed_reason = None
         self.failed_exception = None
@@ -80,6 +83,19 @@ class WebpageResult:
         self.cookie_notices = {}
 
         self._json_excluded_fields = ['_json_excluded_fields', 'screenshots']
+
+    def add_redirect(self, url):
+        self.redirects.append({
+                'url': url
+            })
+
+    def add_new_page(self, url):
+        self.new_pages.append({
+                'url': url
+            })
+
+    def has_new_pages(self):
+        return len(self.new_pages) > 0
 
     def set_failed(self, reason, exception=None, traceback=None):
         self.failed = True
@@ -254,6 +270,9 @@ class WebpageScanner:
         # setup the tab
         self._setup_tab()
         self.tab.wait(0.1)
+
+        # data about requests/repsonses
+        self.recordRedirects = True
         self.requestId = None
 
         # deny permissions because they might pop-up and block detection
@@ -321,6 +340,8 @@ class WebpageScanner:
         self.tab.Network.responseReceived = self._event_response_received
         self.tab.Network.loadingFailed = self._event_loading_failed
         self.tab.Page.loadEventFired = self._event_load_event_fired
+        self.tab.Page.navigatedWithinDocument = self._event_navigated_within_document
+        self.tab.Page.windowOpen = self._event_window_open
         self.tab.Page.javascriptDialogOpening = self._event_javascript_dialog_opening
         
         # start our tab after callbacks have been registered
@@ -426,6 +447,15 @@ class WebpageScanner:
     def _event_loading_failed(self, requestId, errorText, **kwargs):
         if requestId == self.requestId:
             self.result.set_failed(FAILED_REASON_LOADING, errorText)
+
+    def _event_navigated_within_document(self, url, **kwargs):
+        if self.recordRedirects:
+            self.result.add_redirect(url)
+        else:
+            self.result.add_new_page(url)
+
+    def _event_window_open(self, url, **kwargs):
+        self.result.add_new_page(url)
 
     def _event_load_event_fired(self, timestamp, **kwargs):
         """Will be called when the page sends an load event.
