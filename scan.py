@@ -262,49 +262,27 @@ class WebpageScanner:
         self.result = WebpageResult(webpage)
         self.loaded_urls = []
 
-    def scan(self):
-        # initialize `_is_loaded` variable to `False`
-        # it will be set to `True` when the `loadEventFired` event occurs
-        self._is_loaded = False
-
-        # setup the tab
-        self._setup_tab()
-        self.tab.wait(0.1)
-
-        # data about requests/repsonses
-        self.recordRedirects = True
-        self.requestId = None
-
-        # deny permissions because they might pop-up and block detection
-        self._deny_permissions()
+    def scan(self, take_screenshots=True):
+        self._setup()
         
         try:
-            # open url
-            self._clear_browser()
-            self.tab.Page.bringToFront()
-            self.tab.Page.navigate(url=self.webpage.url, _timeout=15)
-
-            # return if failed to load page
-            if self.result.failed:
-                return self.result
-
-            # we wait for load event and JavaScript
-            self._wait_for_load_event_and_js()
-
-            # return if failed to load page
+            # open url and wait for load event and js
+            self._navigate_and_wait()
             if self.result.failed:
                 return self.result
 
             # get root node of document, is needed to be sure that the DOM is loaded
             self.root_node = self.tab.DOM.getDocument().get('root')
 
-            # detect cookie notices
-            self.detect_cookie_notices()
+            # store html of page
+            self.result.set_html(self._get_html_of_node(self.root_node.get('nodeId')))
+
+            # detect language and cookie notices
+            self.detect_language()
+            self.detect_cookie_notices(take_screenshots)
 
             # get cookies
             self.result.set_cookies('all', self._get_all_cookies())
-        except pychrome.exceptions.TimeoutException as e:
-            self.result.set_failed(FAILED_REASON_TIMEOUT, type(e).__name__)
         except Exception as e:
             self.result.set_failed(str(e), type(e).__name__, traceback.format_exc())
 
@@ -334,6 +312,25 @@ class WebpageScanner:
     # SETUP
     ############################################################################
 
+    def _setup(self):
+        self._reset()
+
+        # setup the tab
+        self._setup_tab()
+        self.tab.wait(0.1)
+
+        # deny permissions because they might pop-up and block detection
+        self._deny_permissions()
+
+    def _reset(self):
+        # initialize `_is_loaded` variable to `False`
+        # it will be set to `True` when the `loadEventFired` event occurs
+        self._is_loaded = False
+
+        # data about requests/repsonses
+        self.recordRedirects = True
+        self.requestId = None
+
     def _setup_tab(self):
         # set callbacks for request and response logging
         self.tab.Network.requestWillBeSent = self._event_request_will_be_sent
@@ -359,6 +356,22 @@ class WebpageScanner:
         self.tab.DOM.enable()
         self.tab.Runtime.enable()
         self.tab.Overlay.enable()
+
+    def _navigate_and_wait(self):
+        try:
+            # open url
+            self._clear_browser()
+            self.tab.Page.bringToFront()
+            self.tab.Page.navigate(url=self.webpage.url, _timeout=15)
+
+            # return if failed to load page
+            if self.result.failed:
+                return
+
+            # we wait for load event and JavaScript
+            self._wait_for_load_event_and_js()
+        except pychrome.exceptions.TimeoutException as e:
+            self.result.set_failed(FAILED_REASON_TIMEOUT, type(e).__name__)
 
     def _clear_browser(self):
         """Clears cache, cookies, local storage, etc. of the browser."""
@@ -476,14 +489,7 @@ class WebpageScanner:
     # COOKIE NOTICES
     ############################################################################
 
-    def detect_cookie_notices(self):
-        # store html of page
-        self.result.set_html(self._get_html_of_node(self.root_node.get('nodeId')))
-
-        # check whether language is english or german
-        lang = self.detect_language()
-        self.result.set_language(lang)
-
+    def detect_cookie_notices(self, take_screenshots=True):
         # check whether the consent management platform is used
         # -> there should be a cookie notice
         is_cmp_defined = self.is_cmp_function_defined()
@@ -510,11 +516,12 @@ class WebpageScanner:
         cookie_notice_full_width_node_ids = self._filter_visible_nodes(cookie_notice_full_width_node_ids)
         self.result.add_cookie_notices('full_width_parent', self.get_properties_of_cookie_notices(cookie_notice_full_width_node_ids))
 
-        self.tab.Page.bringToFront()
-        self.take_screenshot('original')
-        self.take_screenshots_of_visible_nodes(cookie_notice_rule_node_ids, 'rules')
-        self.take_screenshots_of_visible_nodes(cookie_notice_fixed_node_ids, 'fixed_parent')
-        self.take_screenshots_of_visible_nodes(cookie_notice_full_width_node_ids, 'full_width_parent')
+        if take_screenshots:
+            self.tab.Page.bringToFront()
+            self.take_screenshot('original')
+            self.take_screenshots_of_visible_nodes(cookie_notice_rule_node_ids, 'rules')
+            self.take_screenshots_of_visible_nodes(cookie_notice_fixed_node_ids, 'fixed_parent')
+            self.take_screenshots_of_visible_nodes(cookie_notice_full_width_node_ids, 'full_width_parent')
 
     def get_properties_of_cookie_notices(self, node_ids):
         return [self._get_properties_of_cookie_notice(node_id) for node_id in node_ids]
@@ -647,7 +654,8 @@ class WebpageScanner:
     def detect_language(self):
         try:
             result = self.tab.Runtime.evaluate(expression='document.body.innerText').get('result')
-            return detect(result.get('value'))
+            language = detect(result.get('value'))
+            self.result.set_language(language)
         except Exception as e:
             self.result.add_warning({
                 'message': str(e),
@@ -655,7 +663,6 @@ class WebpageScanner:
                 'traceback': traceback.format_exc().splitlines(),
                 'method': 'detect_language',
             })
-            return None
 
     def search_for_string(self, search_string):
         """Searches the DOM for the given string and returns all found nodes."""
