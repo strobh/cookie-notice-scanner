@@ -176,11 +176,14 @@ class ClickResult:
     def set_cookies(self, key, cookies):
         self.cookies[key] = cookies
 
-    def add_new_page(self, url, root_frame=True):
-        self.new_pages.append({
+    def add_new_page(self, url, root_frame=True, new_window=False):
+        new_page = {
                 'url': url,
-                'root_frame': root_frame
-            })
+                'root_frame': root_frame,
+                'new_window': new_window,
+            }
+        if new_page not in self.new_pages:
+            self.new_pages.append(new_page)
 
     def has_new_pages(self):
         return len(self.new_pages) > 0
@@ -389,6 +392,7 @@ class WebpageScanner:
         self.tab.Network.responseReceived = self._event_response_received
         self.tab.Network.loadingFailed = self._event_loading_failed
         self.tab.Page.loadEventFired = self._event_load_event_fired
+        self.tab.Page.frameRequestedNavigation = self._event_frame_requested_navigation
         self.tab.Page.frameStartedLoading = self._event_frame_started_loading
         self.tab.Page.navigatedWithinDocument = self._event_navigated_within_document
         self.tab.Page.windowOpen = self._event_window_open
@@ -525,6 +529,11 @@ class WebpageScanner:
             self._is_loaded = False
             self.waitForNavigatedEvent = True
 
+    def _event_frame_requested_navigation(self, url, frameId, **kwargs):
+        is_root_frame = (self.frameId == frameId)
+        if self.recordNewPagesForClick:
+            self.click_result.add_new_page(url, root_frame=is_root_frame)
+
     def _event_navigated_within_document(self, url, frameId, **kwargs):
         is_root_frame = (self.frameId == frameId)
         if self.recordRedirects:
@@ -534,7 +543,7 @@ class WebpageScanner:
 
     def _event_window_open(self, url, **kwargs):
         if self.recordNewPagesForClick:
-            self.click_result.add_new_page(url)
+            self.click_result.add_new_page(url, new_window=True)
 
     def _event_load_event_fired(self, timestamp, **kwargs):
         """Will be called when the page sends an load event.
