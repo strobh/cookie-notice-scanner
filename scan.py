@@ -193,12 +193,15 @@ class ClickResult:
 
 
 class Browser:
-    def __init__(self, abp_filter_filename, debugger_url='http://127.0.0.1:9222'):
+    def __init__(self, abp_filter_filenames, debugger_url='http://127.0.0.1:9222'):
         # create a browser instance which controls chromium
         self.browser = pychrome.Browser(url=debugger_url)
 
         # create helpers
-        self.abp_filter = AdblockPlusFilter(abp_filter_filename)
+        self.abp_filters = {
+                os.path.splitext(os.path.basename(abp_filter_filename))[0]: AdblockPlusFilter(abp_filter_filename) 
+                for abp_filter_filename in abp_filter_filenames
+            }
 
     def scan_page(self, webpage, do_click=False):
         """Tries to scan the webpage and returns the result of the scan.
@@ -260,7 +263,7 @@ class Browser:
         tab = self.browser.new_tab()
 
         # scan the page
-        page_scanner = WebpageScanner(tab=tab, abp_filter=self.abp_filter, webpage=webpage)
+        page_scanner = WebpageScanner(tab=tab, abp_filters=self.abp_filters, webpage=webpage)
         page_scanner.scan(take_screenshots=take_screenshots, click=click)
 
         # close tab and obtain the results
@@ -305,9 +308,9 @@ class AdblockPlusFilter:
 
 
 class WebpageScanner:
-    def __init__(self, tab, abp_filter, webpage):
+    def __init__(self, tab, abp_filters, webpage):
         self.tab = tab
-        self.abp_filter = abp_filter
+        self.abp_filters = abp_filters
         self.webpage = webpage
         self.result = WebpageResult(webpage)
         self.click_result = ClickResult()
@@ -608,9 +611,12 @@ class WebpageScanner:
         self.result.set_cmp_defined(is_cmp_defined)
 
         # find cookie notice by using AdblockPlus rules
-        cookie_notice_rule_node_ids = set(self.find_cookie_notices_by_rules())
-        cookie_notice_rule_node_ids = self._filter_visible_nodes(cookie_notice_rule_node_ids)
-        self.result.add_cookie_notices('rules', self.get_properties_of_cookie_notices(cookie_notice_rule_node_ids))
+        cookie_notice_filters = {}
+        for abp_filter_name, abp_filter in self.abp_filters.items():
+            cookie_notice_rule_node_ids = set(self.find_cookie_notices_by_rules(abp_filter))
+            cookie_notice_rule_node_ids = self._filter_visible_nodes(cookie_notice_rule_node_ids)
+            self.result.add_cookie_notices(abp_filter_name, self.get_properties_of_cookie_notices(cookie_notice_rule_node_ids))
+            cookie_notice_filters[abp_filter_name] = cookie_notice_rule_node_ids
 
         # find string `cookie` in nodes and store the closest parent block element
         cookie_node_ids = self.search_for_string('cookie')
@@ -631,7 +637,8 @@ class WebpageScanner:
         if take_screenshots:
             self.tab.Page.bringToFront()
             self.take_screenshot('original')
-            self.take_screenshots_of_visible_nodes(cookie_notice_rule_node_ids, 'rules')
+            for filter_name, cookie_notice_filter_node_ids in cookie_notice_filters.items():
+                self.take_screenshots_of_visible_nodes(cookie_notice_filter_node_ids, f'filter-{abp_filter_name}')
             self.take_screenshots_of_visible_nodes(cookie_notice_fixed_node_ids, 'fixed_parent')
             self.take_screenshots_of_visible_nodes(cookie_notice_full_width_node_ids, 'full_width_parent')
 
@@ -1034,14 +1041,14 @@ class WebpageScanner:
     # COOKIE NOTICE DETECTION: RULES
     ############################################################################
 
-    def find_cookie_notices_by_rules(self):
+    def find_cookie_notices_by_rules(self, abp_filter):
         """Returns the node ids of the found cookie notices.
 
         The function uses the AdblockPlus ruleset of the browser plugin
         `I DON'T CARE ABOUT COOKIES`.
         See: https://www.i-dont-care-about-cookies.eu/
         """
-        rules = [rule.selector.get('value') for rule in self.abp_filter.get_applicable_rules(self.webpage.domain)]
+        rules = [rule.selector.get('value') for rule in abp_filter.get_applicable_rules(self.webpage.domain)]
         rules_js = json.dumps(rules)
 
         js_function = """
@@ -1501,7 +1508,7 @@ if __name__ == '__main__':
     pool = mp.Pool(1)
 
     # create the browser and a helper function to scan pages
-    browser = Browser(abp_filter_filename='resources/cookie-notice-css-rules.txt')
+    browser = Browser(abp_filter_filenames=['resources/easylist-cookie.txt', 'resources/i-dont-care-about-cookies.txt'])
     f_scan_page = partial(Browser.scan_page, browser)
 
     # create results directory if necessary
