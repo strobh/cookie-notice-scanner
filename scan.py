@@ -1216,7 +1216,7 @@ class WebpageScanner:
                     elem.getBoundingClientRect().width === 0) {
                     visible = false;
                 }
-                if (elem.offsetWidth === 0 || elem.offsetHeight === 0) {
+                if (elem.offsetWidth < 10 || elem.offsetHeight < 10) {
                     visible = false;
                 }
                 const elemCenter = {
