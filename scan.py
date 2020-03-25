@@ -172,6 +172,7 @@ class ClickResult:
         self.cookies = {}
         self.new_pages = []
         self.cookie_notice_visible_after_click = None
+        self.is_page_modal = None
 
     def set_cookies(self, key, cookies):
         self.cookies[key] = cookies
@@ -190,6 +191,9 @@ class ClickResult:
 
     def set_cookie_notice_visible_after_click(self, visible_after_click):
         self.cookie_notice_visible_after_click = visible_after_click
+
+    def set_is_page_modal(self, is_page_modal):
+        self.is_page_modal = is_page_modal
 
 
 class Browser:
@@ -421,7 +425,7 @@ class WebpageScanner:
         try:
             # open url
             self._clear_browser()
-            self.tab.Page.bringToFront()
+            #self.tab.Page.bringToFront()
             self.tab.Page.navigate(url=self.webpage.url, _timeout=15)
 
             # return if failed to load page
@@ -589,6 +593,15 @@ class WebpageScanner:
                 if self.waitForNavigatedEvent:
                     self._wait_for_load_event(30)
 
+
+                is_page_modal = self.is_page_modal({
+                        'x': cookie_notice.get('x'),
+                        'y': cookie_notice.get('y'),
+                        'width': cookie_notice.get('width'),
+                        'height': cookie_notice.get('height'),
+                    })
+                self.click_result.set_is_page_modal(is_page_modal)
+
                 # check whether cookie notice is still visible
                 if self._does_node_exist(cookie_notice.get('node_id')):
                     is_cookie_notice_visible = self.is_node_visible(cookie_notice.get('node_id')).get('is_visible')
@@ -635,7 +648,7 @@ class WebpageScanner:
         self.result.add_cookie_notices('full_width_parent', self.get_properties_of_cookie_notices(cookie_notice_full_width_node_ids))
 
         if take_screenshots:
-            self.tab.Page.bringToFront()
+            #self.tab.Page.bringToFront()
             self.take_screenshot('original')
             for filter_name, cookie_notice_filter_node_ids in cookie_notice_filters.items():
                 self.take_screenshots_of_visible_nodes(cookie_notice_filter_node_ids, f'filter-{abp_filter_name}')
@@ -753,6 +766,12 @@ class WebpageScanner:
             cookie_notice_properties = self._get_object_for_remote_object(result.get('objectId'))
             cookie_notice_properties['node_id'] = node_id
             cookie_notice_properties['clickables'] = clickables_properties
+            cookie_notice_properties['is_page_modal'] = self.is_page_modal({
+                    'x': cookie_notice_properties.get('x'),
+                    'y': cookie_notice_properties.get('y'),
+                    'width': cookie_notice_properties.get('width'),
+                    'height': cookie_notice_properties.get('height'),
+                })
             return cookie_notice_properties
         except pychrome.exceptions.CallMethodException as e:
             self.result.add_warning({
@@ -1289,6 +1308,67 @@ class WebpageScanner:
                 'is_visible': False,
                 'visible_node': None,
             }
+
+
+    ############################################################################
+    # MODALITY CHECK
+    ############################################################################
+
+    def is_page_modal(self, cookie_notice=None):
+        cookie_notice_js = json.dumps(cookie_notice)
+
+        js_function = """
+            (function modal() {
+                let margin = 5;
+                let cookieNotice = """ + cookie_notice_js + """;
+
+                let viewportWidth = document.documentElement.clientWidth;
+                let viewportHeight = document.documentElement.clientHeight;
+                let viewportHorizontalCenter = viewportWidth / 2;
+                let viewportVerticalCenter = viewportHeight / 2;
+
+                let testPositions = [
+                    {'x': margin, 'y': margin},
+                    {'x': margin, 'y': viewportVerticalCenter},
+                    {'x': margin, 'y': viewportHeight - margin},
+                    {'x': viewportVerticalCenter, 'y': margin},
+                    {'x': viewportVerticalCenter, 'y': viewportHeight - margin},
+                    {'x': viewportWidth - margin, 'y': margin},
+                    {'x': viewportWidth - margin, 'y': viewportVerticalCenter},
+                    {'x': viewportWidth - margin, 'y': viewportHeight - margin},
+                ];
+
+                if (cookieNotice) {
+                    if (cookieNotice.width == 'full') {
+                        cookieNotice.width = viewportWidth;
+                    }
+                    if (cookieNotice.height == 'full') {
+                        cookieNotice.height = viewportHeight;
+                    }
+                    for (var i = 0; i < testPositions.length; i++) {
+                        let testPosition = testPositions[i];
+                        if ((testPosition.x >= cookieNotice.x && testPosition.x <= (cookieNotice.x + cookieNotice.width)) &&
+                                (testPosition.y >= cookieNotice.y && testPosition.y <= (cookieNotice.y + cookieNotice.height))) {
+                            let index = testPositions.indexOf(testPosition);
+                            testPositions.splice(index, 1);
+                        }
+                    }
+                }
+
+                let previousContainer = document.elementFromPoint(testPositions[0].x, testPositions[0].y);
+                for (var i = 1; i < testPositions.length; i++) {
+                    let testPosition = testPositions[i];
+                    let testContainer = document.elementFromPoint(testPosition.x, testPosition.y);
+                    if (previousContainer !== testContainer) {
+                        return false;
+                    }
+                    previousContainer = testContainer;
+                }
+                return true;
+            })();"""
+
+        result = self.tab.Runtime.evaluate(expression=js_function).get('result')
+        return result.get('value')
 
 
     ############################################################################
