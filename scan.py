@@ -249,6 +249,13 @@ class Browser:
         # click each element and add the click result to the webpage result
         for detection_technique, cookie_notices in result.cookie_notices.items():
             for cookie_notice_index, cookie_notice in enumerate(cookie_notices):
+                if len(cookie_notice.get('clickables')) > 5:
+                    result.add_warning({
+                            'message': 'Too many clickables to try them out',
+                            'exception': 'TooManyClickables',
+                            'method': 'Browser.do_click',
+                        })
+                    continue
                 for clickable_index, clickable in enumerate(cookie_notice.get('clickables')):
                     # check whether click was already done
                     if clickable.get('node_id') in click_results:
