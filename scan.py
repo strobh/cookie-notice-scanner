@@ -1277,7 +1277,7 @@ class WebpageScanner:
                         if (!pointContainer) break;
                     } while (pointContainer = pointContainer.parentNode);
 
-                    pointContainer = document.elementFromPoint(elemCenter.x, elemCenter.y + (parseValue(style.fontSize)/2));
+                    pointContainer = document.elementFromPoint(elemCenter.x, elemCenter.y - (parseValue(style.fontSize)/2));
                     do {
                         if (pointContainer === elem) return elem;
                         if (!pointContainer) break;
@@ -1638,8 +1638,6 @@ if __name__ == '__main__':
 
     # scan the pages in parallel
     for rank, domain in enumerate(domains, start=1):
-        if rank < 60:
-            continue
         webpage = Webpage(rank=rank, domain=domain)
         pool.apply_async(f_scan_page, args=(webpage, args.do_click), callback=f_page_scanned)
 
