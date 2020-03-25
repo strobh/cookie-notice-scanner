@@ -7,6 +7,7 @@ This tool was developed as part of a bachelor thesis to automatically recognize 
 
 - Chromium (or Google Chrome) browser
 - Python3
+- pipenv
 
 
 ## Install dependencies
@@ -16,13 +17,35 @@ $ pipenv install
 ```
 
 
-## Run the script
+## Run
 
-First, run the browser in automation mode using the debugging port `9222`. For Mac users:
+### Start the browser
+
+First, start the browser in automation mode using the debugging port `9222`. 
+
+For **Mac** users:
 
 ```
 $ ./run-chromium.sh
 ```
+
+On a **Linux server**, create a display first and then start the browser:
+
+```
+$ sudo apt install xvfb
+$ sudo Xvfb :10 -ac -screen 0 1400x950x24 &
+$ DISPLAY=:10 ./run-chromium.sh
+```
+
+Afterwards, stop the display again:
+
+```
+$ jobs -l
+$ sudo kill PID_OF_JOB
+```
+
+
+### Start the scan
 
 Then, run the script `scan.py`:
 
