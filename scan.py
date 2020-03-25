@@ -391,7 +391,7 @@ class WebpageScanner:
         self.tab.wait(0.1)
 
         # deny permissions because they might pop-up and block detection
-        self._deny_permissions()
+        #self._deny_permissions() # problems with ubuntu
 
     def _setup_tab(self):
         # set callbacks for request and response logging
@@ -651,7 +651,7 @@ class WebpageScanner:
             #self.tab.Page.bringToFront()
             self.take_screenshot('original')
             for filter_name, cookie_notice_filter_node_ids in cookie_notice_filters.items():
-                self.take_screenshots_of_visible_nodes(cookie_notice_filter_node_ids, f'filter-{abp_filter_name}')
+                self.take_screenshots_of_visible_nodes(cookie_notice_filter_node_ids, f'filter-{filter_name}')
             self.take_screenshots_of_visible_nodes(cookie_notice_fixed_node_ids, 'fixed_parent')
             self.take_screenshots_of_visible_nodes(cookie_notice_full_width_node_ids, 'full_width_parent')
 
