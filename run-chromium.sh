@@ -4,9 +4,16 @@ TEMP_DIR=$(mktemp -d "$BASE_TEMP_DIR/chromium.XXXXXXXX")
 
 echo "Running chromium with temporary profile in: $TEMP_DIR"
 
+unameOut="$(uname -s)"
+case "${unameOut}" in
+    Darwin*)    chromiumPath="/Applications/Chromium.app/Contents/MacOS/Chromium";;
+    Linux*)     chromiumPath="/usr/bin/chromium";;
+    *)          echo "Unknown uname: ${unameOut}" && exit
+esac
+echo ${machine}
+
 # https://peter.sh/experiments/chromium-command-line-switches/
-#/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
-/Applications/Chromium.app/Contents/MacOS/Chromium \
+"${chromiumPath}" \
     --remote-debugging-port=9222 --enable-automation \
     --user-data-dir="$TEMP_DIR" --no-first-run \
     --disk-cache-size=0  \
