@@ -633,9 +633,9 @@ class WebpageScanner:
 
         # find string `cookie` in nodes and store the closest parent block element
         cookie_node_ids = self.search_for_string('cookie')
+        cookie_node_ids = self._filter_visible_nodes(cookie_node_ids)
         cookie_node_ids = set([self.find_parent_block_element(node_id) for node_id in cookie_node_ids])
         cookie_node_ids = [cookie_node_id for cookie_node_id in cookie_node_ids if cookie_node_id is not None]
-        cookie_node_ids = self._filter_visible_nodes(cookie_node_ids)
 
         # find fixed parent nodes (i.e. having style `position: fixed`) with string `cookie`
         cookie_notice_fixed_node_ids = self.find_cookie_notices_by_fixed_parent(cookie_node_ids)
@@ -1226,6 +1226,15 @@ class WebpageScanner:
         # width or height)
         js_function = """
             function isVisible(elem) {
+                function parseValue(value) {
+                    var parsedValue = parseInt(value);
+                    if (isNaN(parsedValue)) {
+                        return 0;
+                    } else {
+                        return parsedValue;
+                    }
+                }
+
                 if (!elem) elem = this;
                 if (!(elem instanceof Element)) return false;
                 let visible = true;
@@ -1256,6 +1265,12 @@ class WebpageScanner:
 
                 if (visible) {
                     let pointContainer = document.elementFromPoint(elemCenter.x, elemCenter.y);
+                    do {
+                        if (pointContainer === elem) return elem;
+                        if (!pointContainer) break;
+                    } while (pointContainer = pointContainer.parentNode);
+
+                    pointContainer = document.elementFromPoint(elemCenter.x, elemCenter.y + (parseValue(style.fontSize)/2));
                     do {
                         if (pointContainer === elem) return elem;
                         if (!pointContainer) break;
@@ -1616,6 +1631,8 @@ if __name__ == '__main__':
 
     # scan the pages in parallel
     for rank, domain in enumerate(domains, start=1):
+        if rank < 60:
+            continue
         webpage = Webpage(rank=rank, domain=domain)
         pool.apply_async(f_scan_page, args=(webpage, args.do_click), callback=f_page_scanned)
 
