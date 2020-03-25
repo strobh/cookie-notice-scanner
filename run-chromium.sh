@@ -2,6 +2,14 @@
 BASE_TEMP_DIR="/tmp"
 TEMP_DIR=$(mktemp -d "$BASE_TEMP_DIR/chromium.XXXXXXXX")
 
+echo "On server, create display first:"
+echo "$ sudo Xvfb :10 -ac -screen 0 1400x950x24 &"
+echo ""
+echo "And stop display afterwards:"
+echo "$ jobs -l"
+echo "$ sudo kill PID_OF_JOB"
+echo ""
+
 echo "Running chromium with temporary profile in: $TEMP_DIR"
 
 unameOut="$(uname -s)"
