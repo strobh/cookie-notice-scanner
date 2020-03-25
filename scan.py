@@ -787,10 +787,13 @@ class WebpageScanner:
                 'traceback': traceback.format_exc().splitlines(),
                 'method': '_get_cookie_notice_properties',
             })
-            return dict.fromkeys([
+            cookie_notice_properties = dict.fromkeys([
                     'html', 'has_id', 'has_class', 'unique_class_combinations',
                     'unique_attribute_combinations', 'id', 'class', 'text',
-                    'fontsize', 'width', 'height', 'x', 'y'])
+                    'fontsize', 'width', 'height', 'x', 'y', 'node_id', 'clickables',
+                    'is_page_modal'])
+            cookie_notice_properties['clickables'] = []
+            return cookie_notice_properties
 
 
     ############################################################################
@@ -1196,7 +1199,9 @@ class WebpageScanner:
                 'traceback': traceback.format_exc().splitlines(),
                 'method': '_get_cookie_notice_properties',
             })
-            return dict.fromkeys(['html', 'node', 'type', 'text', 'value', 'fontsize', 'width', 'height', 'x', 'y', 'is_visible'])
+            return dict.fromkeys([
+                'html', 'node', 'type', 'text', 'value', 'fontsize', 'width', 'height', 'x', 'y',
+                'node_id', 'is_visible'])
 
     def _click_node(self, node_id):
         js_function = """
