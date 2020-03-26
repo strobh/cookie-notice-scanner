@@ -1592,6 +1592,13 @@ if __name__ == '__main__':
                         help=f'the set of domains to scan: ' +
                              f'`{ARG_TOP_2000}` for the top 2000 domains, ' +
                              f'`{ARG_RANDOM}` for domains in file `resources/sampled-domains.txt`')
+    parser.add_argument('--start', dest='start_rank', nargs='?', default='1',
+                        help='the rank to start the scanning from, including the given rank' +
+                             '(default: 1)')
+    parser.add_argument('--end', dest='end_rank', nargs='?', default='-1',
+                        help='the rank to end the scanning at, including the given rank, ' +
+                             '-1 if the complete dataset should be scanned' +
+                             '(default: -1)')
     parser.add_argument('--results', dest='results_directory', nargs='?', default='results',
                         help='the directory to store the the results in ' +
                              '(default: `results`)')
@@ -1641,8 +1648,11 @@ if __name__ == '__main__':
             if result.failed_traceback is not None:
                 print(result.failed_traceback)
 
-    # scan the pages in parallel
+    # scan the pages
     for rank, domain in enumerate(domains, start=1):
+        # skip everything that is not between start and end rank
+        if rank < args.start_rank or (args.end_rank != -1 and rank > args.end_rank):
+            continue
         webpage = Webpage(rank=rank, domain=domain)
         pool.apply_async(f_scan_page, args=(webpage, args.do_click), callback=f_page_scanned)
 
