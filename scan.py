@@ -1593,17 +1593,18 @@ if __name__ == '__main__':
                              f'`{ARG_TOP_2000}` for the top 2000 domains, ' +
                              f'`{ARG_RANDOM}` for domains in file `resources/sampled-domains.txt`')
     parser.add_argument('--start', dest='start_rank', nargs='?', type=int, default=1,
-                        help='the rank to start the scanning from, including the given rank' +
+                        help='the rank to start the scanning from, including the given rank ' +
                              '(default: 1)')
     parser.add_argument('--end', dest='end_rank', nargs='?', type=int, default=-1,
                         help='the rank to end the scanning at, including the given rank, ' +
-                             '-1 if the complete dataset should be scanned' +
+                             '-1 if the dataset should be scanned to the end ' +
                              '(default: -1)')
     parser.add_argument('--results', dest='results_directory', nargs='?', default='results',
                         help='the directory to store the the results in ' +
                              '(default: `results`)')
     parser.add_argument('--click', dest='do_click', action="store_true",
-                        help='whether all links and buttons in the detected cookie notices should be clicked or not ' +
+                        help='whether links and buttons in the detected cookie notices should be ' +
+                             'clicked and analyzed or not ' +
                              '(default: false)')
 
     # load the correct dataset

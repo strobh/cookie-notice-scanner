@@ -60,8 +60,8 @@ The script `scan.py` has multiple options including a help option:
 
 ```
 $ pipenv run python scan.py --help
-usage: scan.py [-h] [--dataset [DATASET]] [--results [RESULTS_DIRECTORY]]
-               [--click]
+usage: scan.py [-h] [--dataset [DATASET]] [--start [START_RANK]]
+               [--end [END_RANK]] [--results [RESULTS_DIRECTORY]] [--click]
 
 Scans a list of domains, identifies cookie notices and evaluates them.
 
@@ -70,9 +70,15 @@ optional arguments:
   --dataset [DATASET]   the set of domains to scan: `1` for the top 2000
                         domains, `2` for domains in file `resources/sampled-
                         domains.txt`
+  --start [START_RANK]  the rank to start the scanning from, including the
+                        given rank (default: 1)
+  --end [END_RANK]      the rank to end the scanning at, including the given
+                        rank, -1 if the dataset should be scanned to the end
+                        (default: -1)
   --results [RESULTS_DIRECTORY]
                         the directory to store the the results in (default:
                         `results`)
-  --click               whether all links and buttons in the detected cookie
-                        notices should be clicked or not (default: false)
+  --click               whether links and buttons in the detected cookie
+                        notices should be clicked and analyzed or not
+                        (default: false)
 ```
