@@ -1592,10 +1592,10 @@ if __name__ == '__main__':
                         help=f'the set of domains to scan: ' +
                              f'`{ARG_TOP_2000}` for the top 2000 domains, ' +
                              f'`{ARG_RANDOM}` for domains in file `resources/sampled-domains.txt`')
-    parser.add_argument('--start', dest='start_rank', nargs='?', default='1',
+    parser.add_argument('--start', dest='start_rank', nargs='?', type=int, default=1,
                         help='the rank to start the scanning from, including the given rank' +
                              '(default: 1)')
-    parser.add_argument('--end', dest='end_rank', nargs='?', default='-1',
+    parser.add_argument('--end', dest='end_rank', nargs='?', type=int, default=-1,
                         help='the rank to end the scanning at, including the given rank, ' +
                              '-1 if the complete dataset should be scanned' +
                              '(default: -1)')
