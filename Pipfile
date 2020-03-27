@@ -12,6 +12,7 @@ python-abp = "*"
 tranco = "*"
 langdetect = "*"
 tld = "*"
+nltk = "*"
 
 [requires]
 python_version = "3.7"
