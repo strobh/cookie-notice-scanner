@@ -16,7 +16,6 @@ import tld.exceptions
 from abp.filters import parse_filterlist
 from abp.filters.parser import Filter
 from langdetect import detect
-from pprint import pprint
 from tld import get_fld, get_tld
 from tranco import Tranco
 
